@@ -124,7 +124,6 @@ if analyze_button:
         st.markdown("---")
         st.subheader("🧠 決策大腦深度解析 (Gemini AI)")
         
-        # 強化繁體中文絕對約束
         prompt = f"""
         你是一位華爾街頂級量化分析師 (嚴格執行 DD 模式)。
         分析目標：{stock_target}
@@ -139,11 +138,16 @@ if analyze_button:
         """
         
         try:
-            # 2.5 世代動態雷達
             available_models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods and 'gemini' in m.name.lower() and 'vision' not in m.name.lower() and 'robotics' not in m.name.lower()]
             target_models = sorted([m for m in available_models if '1.5' in m or '2.0' in m or '2.5' in m], reverse=True)[:3]
             
+            if not target_models:
+                st.error(f"❌ 雷達失效：找不到任何可用模型。原始清單：{available_models}")
+                st.stop()
+
             success = False
+            error_logs = [] # BOSS，我們新增了這個陣列來抓戰犯
+            
             for model_name in target_models:
                 try:
                     model = genai.GenerativeModel(model_name)
@@ -156,6 +160,15 @@ if analyze_button:
                     res_box.markdown(full_report)
                     success = True
                     break
-                except: continue
-            if not success: st.error("❌ 所有 AI 模型暫時停機。")
-        except Exception as e: st.error(f"❌ 系統連線異常: {e}")
+                except Exception as e:
+                    # 強制將 Google 的底層拒絕理由記錄下來
+                    error_logs.append(f"⚠️ **{model_name}** 拒絕連線，原因：`{e}`")
+                    continue
+            
+            if not success: 
+                st.error("❌ 所有 AI 模型皆無法生成報告。底層致命錯誤明細如下：")
+                for err in error_logs:
+                    st.warning(err)
+                    
+        except Exception as e: 
+            st.error(f"❌ 系統連線基礎異常: {e}")
