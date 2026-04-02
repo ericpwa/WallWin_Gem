@@ -8,7 +8,6 @@ import google.generativeai as genai
 def calculate_quant_matrix(ticker_obj, df, advanced_df, target_symbol):
     info = ticker_obj.info
     
-    # 【資安級數據清洗】防禦 None 與空字串導致的 ValueError
     def safe_float(val, default=0.0):
         try:
             return float(val) if val is not None and str(val).strip() != "" else default
@@ -20,12 +19,10 @@ def calculate_quant_matrix(ticker_obj, df, advanced_df, target_symbol):
     eps_g = safe_float(info.get('earningsQuarterlyGrowth')) * 100
     beta = safe_float(info.get('beta'), default=1.0)
 
-    # 基礎估值與量價
     peg = (pe / eps_g) if (eps_g > 0 and pe > 0) else 999.0
     vol_20ma = df['Volume'].rolling(window=20).mean()
     rvol = df['Volume'].iloc[-1] / vol_20ma.iloc[-1] if not vol_20ma.empty and vol_20ma.iloc[-1] > 0 else 0
     
-    # 【極端值防護】防止妖股股價為 0 導致 Divide by Zero
     low_min = df['Low'].tail(5).min()
     vcp = ((df['High'].tail(5).max() - low_min) / low_min * 100) if low_min > 0 else 0
     
@@ -39,7 +36,6 @@ def calculate_quant_matrix(ticker_obj, df, advanced_df, target_symbol):
         "rvol": rvol, "vcp": vcp, "vwap": vwap, "atr_pct": atr_pct
     }
     
-    # [無限擴充架構] 動態吸收 CSV 機構級數據，並防禦 IndexError
     m["advanced"] = {}
     if advanced_df is not None:
         try:
@@ -71,7 +67,7 @@ def get_traffic_light(m, mode, strategy, r_thresh, v_thresh):
 
 # --- 3. 頁面初始化 ---
 st.set_page_config(page_title="WallWin Gem 量化系統", layout="wide")
-st.title("🛡️ WallWin Gem 戰略指揮中心 (完全體)")
+st.title("🛡️ WallWin Gem 戰略指揮中心 (完全體 100%)")
 
 try:
     genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
@@ -89,6 +85,9 @@ st.sidebar.markdown("---")
 with st.sidebar.expander("🎚️ 戰略參數微調 (點擊展開)", expanded=False):
     r_thresh = st.slider("RVOL 爆量閾值", 1.0, 5.0, 2.0, 0.1)
     v_thresh = st.slider("VCP 壓縮限度 (%)", 1.0, 10.0, 5.0, 0.5)
+    # ✅ [藍圖補齊] 滑桿越界防呆
+    if r_thresh < 1.5: st.warning("⚠️ 防呆：RVOL 閾值過低，易產生假突破訊號。")
+    if v_thresh > 8.0: st.warning("⚠️ 防呆：VCP 容忍度過高，失去波動收斂意義。")
 
 st.sidebar.subheader("📁 HITL 進階私房數據")
 uploaded_file = st.sidebar.file_uploader("上傳 .csv 檔案 (解鎖進階分析)", type="csv")
@@ -124,6 +123,12 @@ if analyze_button:
             st.warning(f"🛠️ HITL 介入：已手動將 PEG 覆蓋為 {hitl_peg}")
             
         st.info(f"**今日現價：`{m['price']:.2f}`** │ 成交量：`{m['volume']/1000:,.0f}` 張")
+        
+        # ✅ [藍圖補齊] 流動性與高波動防護網 UI 警告
+        if m['volume'] < 200000:
+            st.error("🩸 【流動性枯竭警告】：單日成交量低於 200 張，滑價與人為操縱風險極高！")
+        if m['atr_pct'] > 5.0:
+            st.warning(f"🌪️ 【高波動警告】：真實波動率達 {m['atr_pct']:.2f}%，請留意劇烈洗盤風險。")
         
         col1, col2 = st.columns([2, 1])
         with col1: st.line_chart(hist['Close'].tail(120)) 
