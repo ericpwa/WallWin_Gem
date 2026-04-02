@@ -4,19 +4,16 @@ import pandas as pd
 import ta
 import numpy as np
 import google.generativeai as genai
-import time
 
-# --- 1. 核心運算引擎 (Phase 2 & 4) ---
+# --- 1. 核心運算引擎 ---
 def calculate_quant_matrix(ticker_obj, df, rvol_threshold, vcp_threshold):
     info = ticker_obj.info
-    # 白馬指標
     beta = info.get('beta', 1.0)
     pb_ratio = info.get('priceToBook', 0.0)
     current_pe = info.get('trailingPE', 0.0)
     eps_growth = (info.get('earningsQuarterlyGrowth', 0.0) or 0) * 100 
     peg = current_pe / eps_growth if eps_growth > 0 else 999.0
     
-    # 黑馬指標
     df['Vol_20MA'] = df['Volume'].rolling(window=20).mean()
     rvol = df['Volume'].iloc[-1] / df['Vol_20MA'].iloc[-1] if not df['Vol_20MA'].empty else 0
     recent_df = df.tail(5)
@@ -31,7 +28,7 @@ def calculate_quant_matrix(ticker_obj, df, rvol_threshold, vcp_threshold):
         "price": df['Close'].iloc[-1]
     }
 
-# --- 2. 戰術燈號 (整合 Phase 4 滑桿參數) ---
+# --- 2. 戰術燈號 ---
 def get_traffic_light(m, mode, strategy, r_thresh, v_thresh):
     if mode == "白馬股 (價值/已驗證)":
         if strategy == "穩健型 (合理成長)":
@@ -50,17 +47,17 @@ def get_traffic_light(m, mode, strategy, r_thresh, v_thresh):
             return "🔵 藍燈", "量縮震盪，等待表態"
 
 # --- 3. 頁面初始化 ---
-st.set_page_config(page_title="BOSS 量化決策系統", layout="wide")
-st.title("🛡️ BOSS 量化戰略指揮中心 (Phase 4 部署版)")
+st.set_page_config(page_title="WallWin Gem 量化系統", layout="wide")
+st.title("🛡️ WallWin Gem 戰略指揮中心")
 
 try:
     api_key = st.secrets["GEMINI_API_KEY"]
     genai.configure(api_key=api_key)
 except Exception:
-    st.error("❌ P1: 資安警告：未偵測到 API Key")
+    st.error("❌ 資安警告：未偵測到 API Key")
     st.stop()
 
-# --- 4. 側邊欄：戰略控制台 (Task 1: Sliders & HITL) ---
+# --- 4. 側邊欄：戰略控制台 ---
 st.sidebar.header("⚙️ 戰略控制台")
 stock_target = st.sidebar.text_input("🎯 目標股號", "2317.TW")
 mode_select = st.sidebar.radio("市場定調", ["白馬股 (價值/已驗證)", "黑馬潛力股 (轉機/突破)"])
@@ -92,12 +89,10 @@ if analyze_button:
             
         m = calculate_quant_matrix(ticker, hist, r_thresh, v_thresh)
         
-        # [Task 1 Step 2: 執行 HITL 覆蓋]
         if manual_override:
             m['white_horse']['peg'] = hitl_peg
             st.warning(f"🛠️ HITL 介入：已手動將 PEG 覆蓋為 {hitl_peg}")
 
-        # 價量明細面板
         today_s, yest_s = hist.iloc[-1], hist.iloc[-2]
         st.info(f"**今日現價：`{today_s['Close']:.2f}`** │ 昨日收盤：`{yest_s['Close']:.2f}` │ 成交量：`{yest_s['Volume']/1000:,.0f}` 張")
         
@@ -120,7 +115,7 @@ if analyze_button:
             elif "紅燈" in light_color: st.error(f"**{light_color}**：{advice}")
             else: st.info(f"**{light_color}**：{advice}")
 
-        # --- Phase 3 整合與 2.5 世代雷達 ---
+        # --- 6. 大腦連線與終極容錯雷達 ---
         st.markdown("---")
         st.subheader("🧠 決策大腦深度解析 (Gemini AI)")
         
@@ -138,15 +133,30 @@ if analyze_button:
         """
         
         try:
-            available_models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods and 'gemini' in m.name.lower() and 'vision' not in m.name.lower() and 'robotics' not in m.name.lower()]
-            target_models = sorted([m for m in available_models if '1.5' in m or '2.0' in m or '2.5' in m], reverse=True)[:3]
+            # 嚴格封殺 tts/vision/robotics，只留純淨文本模型
+            available_models = [
+                m.name for m in genai.list_models() 
+                if 'generateContent' in m.supported_generation_methods 
+                and 'gemini' in m.name.lower() 
+                and 'vision' not in m.name.lower() 
+                and 'robotics' not in m.name.lower()
+                and 'tts' not in m.name.lower()
+            ]
+            
+            # 強制將速度快、免費額度極高的 flash 模型排在第一順位，避開 pro 的 429 限制
+            target_models = sorted(
+                [m for m in available_models if '1.5' in m or '2.0' in m or '2.5' in m],
+                key=lambda x: (0 if 'flash' in x.lower() else 1)
+            )[:3]
             
             if not target_models:
-                st.error(f"❌ 雷達失效：找不到任何可用模型。原始清單：{available_models}")
+                st.error("❌ 雷達失效：找不到任何可用模型。")
                 st.stop()
+                
+            st.caption(f"📡 雷達精準鎖定模型：`{target_models}`")
 
             success = False
-            error_logs = [] # BOSS，我們新增了這個陣列來抓戰犯
+            error_logs = []
             
             for model_name in target_models:
                 try:
@@ -159,14 +169,14 @@ if analyze_button:
                         res_box.markdown(full_report + "▌")
                     res_box.markdown(full_report)
                     success = True
+                    st.success(f"✅ 成功透過 **{model_name}** 完成深度解析。")
                     break
                 except Exception as e:
-                    # 強制將 Google 的底層拒絕理由記錄下來
-                    error_logs.append(f"⚠️ **{model_name}** 拒絕連線，原因：`{e}`")
+                    error_logs.append(f"⚠️ **{model_name}** 拒絕連線：`{e}`")
                     continue
             
             if not success: 
-                st.error("❌ 所有 AI 模型皆無法生成報告。底層致命錯誤明細如下：")
+                st.error("❌ 所有 AI 模型皆無法生成報告。錯誤明細如下 (如為 429 請等待幾分鐘讓額度重置)：")
                 for err in error_logs:
                     st.warning(err)
                     
