@@ -85,7 +85,8 @@ st.sidebar.markdown("---")
 with st.sidebar.expander("🎚️ 戰略參數微調 (點擊展開)", expanded=False):
     r_thresh = st.slider("RVOL 爆量閾值", 1.0, 5.0, 2.0, 0.1)
     v_thresh = st.slider("VCP 壓縮限度 (%)", 1.0, 10.0, 5.0, 0.5)
-    # ✅ [藍圖補齊] 滑桿越界防呆
+    
+    # ✅ [藍圖補齊] 滑桿越界防呆 UI 實裝
     if r_thresh < 1.5: st.warning("⚠️ 防呆：RVOL 閾值過低，易產生假突破訊號。")
     if v_thresh > 8.0: st.warning("⚠️ 防呆：VCP 容忍度過高，失去波動收斂意義。")
 
@@ -124,7 +125,7 @@ if analyze_button:
             
         st.info(f"**今日現價：`{m['price']:.2f}`** │ 成交量：`{m['volume']/1000:,.0f}` 張")
         
-        # ✅ [藍圖補齊] 流動性與高波動防護網 UI 警告
+        # ✅ [藍圖補齊] 流動性與高波動防護網 UI 警告實裝
         if m['volume'] < 200000:
             st.error("🩸 【流動性枯竭警告】：單日成交量低於 200 張，滑價與人為操縱風險極高！")
         if m['atr_pct'] > 5.0:
