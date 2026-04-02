@@ -4,10 +4,9 @@ import pandas as pd
 import ta
 import google.generativeai as genai
 
-# --- 1. 核心運算引擎 (支援動態 CSV 注入) ---
+# --- 1. 核心運算引擎 (雙軌 HITL 支援) ---
 def calculate_quant_matrix(ticker_obj, df, advanced_df, rvol_threshold, vcp_threshold):
     info = ticker_obj.info
-    # 基礎量價與估值矩陣
     m = {
         "price": df['Close'].iloc[-1],
         "volume": df['Volume'].iloc[-1],
@@ -21,7 +20,7 @@ def calculate_quant_matrix(ticker_obj, df, advanced_df, rvol_threshold, vcp_thre
         "atr_pct": (ta.volatility.AverageTrueRange(high=df['High'], low=df['Low'], close=df['Close']).average_true_range().iloc[-1] / df['Close'].iloc[-1]) * 100
     }
     
-    # [無限擴充架構] 動態吸收 BOSS 上傳的機構級數據
+    # [無限擴充架構] 動態吸收 CSV 機構級數據
     m["advanced"] = {}
     if advanced_df is not None:
         try:
@@ -33,7 +32,7 @@ def calculate_quant_matrix(ticker_obj, df, advanced_df, rvol_threshold, vcp_thre
             
     return m
 
-# --- 2. 戰術燈號 (整合降規邏輯) ---
+# --- 2. 戰術燈號 ---
 def get_traffic_light(m, mode, strategy, r_thresh, v_thresh):
     if mode == "白馬股 (價值/已驗證)":
         if strategy == "穩健型 (合理成長)":
@@ -47,16 +46,16 @@ def get_traffic_light(m, mode, strategy, r_thresh, v_thresh):
         if m['rvol'] > r_thresh and m['vcp'] < v_thresh: return "🟢 綠燈", "爆量突破，積極跟進動能"
         else: return "🔵 藍燈", "量縮震盪，等待表態"
 
-# --- 3. 頁面初始化與 API 設定 ---
+# --- 3. 頁面初始化 ---
 st.set_page_config(page_title="WallWin Gem 量化系統", layout="wide")
-st.title("🛡️ WallWin Gem 戰略指揮中心 (完全體)")
+st.title("🛡️ WallWin Gem 戰略指揮中心 (大統一完全體)")
 
 try:
     genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
 except:
     st.error("❌ 缺失 API Key"); st.stop()
 
-# --- 4. 側邊欄：戰略控制台 (包含 CSV 上傳) ---
+# --- 4. 側邊欄：戰略控制台 (整合雙軌 HITL) ---
 st.sidebar.header("⚙️ 戰略控制台")
 stock_target = st.sidebar.text_input("🎯 目標股號", "2206.TW")
 mode_select = st.sidebar.radio("市場定調", ["白馬股 (價值/已驗證)", "黑馬潛力股 (轉機/突破)"])
@@ -67,18 +66,24 @@ st.sidebar.subheader("🎚️ 戰略敏感度微調")
 r_thresh = st.sidebar.slider("RVOL 爆量閾值", 1.0, 5.0, 2.0, 0.1)
 v_thresh = st.sidebar.slider("VCP 壓縮限度 (%)", 1.0, 10.0, 5.0, 0.5)
 
+# [HITL 軌道 1] 手動覆蓋 PEG
 st.sidebar.markdown("---")
-# ==========================================
-# 🚨 這裡就是您之前遺漏的 CSV 上傳功能區塊！
-# ==========================================
-st.sidebar.subheader("📁 機構級私房數據 (CSV 注入)")
-uploaded_file = st.sidebar.file_uploader("上傳 .csv 檔案 (自動解鎖進階分析)", type="csv")
+st.sidebar.subheader("🛠️ HITL 基礎人工校準")
+manual_override = st.sidebar.toggle("啟用 PEG 數據覆蓋")
+hitl_peg = 999.0
+if manual_override:
+    hitl_peg = st.sidebar.number_input("手動修正 PEG 數據", 0.0, 10.0, 1.2, 0.1)
+
+# [HITL 軌道 2] 擴充 CSV 上傳
+st.sidebar.markdown("---")
+st.sidebar.subheader("📁 HITL 進階私房數據 (CSV)")
+uploaded_file = st.sidebar.file_uploader("上傳 .csv 檔案 (解鎖進階分析)", type="csv")
 advanced_data = None
 if uploaded_file:
     advanced_data = pd.read_csv(uploaded_file)
     st.sidebar.success("✅ 私房數據已掛載，大腦權限解鎖！")
 else:
-    st.sidebar.warning("⚠️ 執行降規模式：僅依賴量價與基礎估值")
+    st.sidebar.warning("⚠️ 降規模式：未掛載 CSV 數據")
 
 analyze_button = st.sidebar.button("🚀 啟動深度量化解析", use_container_width=True)
 
@@ -91,6 +96,11 @@ if analyze_button:
         
         m = calculate_quant_matrix(ticker, hist, advanced_data, r_thresh, v_thresh)
         
+        # 執行 PEG 覆蓋邏輯
+        if manual_override:
+            m['peg'] = hitl_peg
+            st.warning(f"🛠️ HITL 介入：已手動將 PEG 覆蓋為 {hitl_peg}")
+            
         st.info(f"**今日現價：`{m['price']:.2f}`** │ 成交量：`{m['volume']/1000:,.0f}` 張")
         
         col1, col2 = st.columns([2, 1])
@@ -98,7 +108,7 @@ if analyze_button:
         with col2:
             st.subheader("核心量化指標")
             st.metric("P/E", f"{m['pe']:.2f}")
-            st.metric("PEG", f"{m['peg']:.2f}", delta="數據缺失" if m['peg'] == 999 else None)
+            st.metric("PEG", f"{m['peg']:.2f}", delta="手動覆蓋" if manual_override else ("數據缺失" if m['peg'] == 999 else None))
             st.metric("RVOL", f"{m['rvol']:.2f}x")
             st.metric("VCP", f"{m['vcp']:.2f}%")
             
@@ -112,21 +122,21 @@ if analyze_button:
             st.subheader("🚦 戰術判定燈號")
             st.write(f"**{light_color}**：{advice}")
 
-        # --- 6. Gemini 深度解析 (修復崩潰 Bug) ---
+        # --- 6. Gemini 深度解析 ---
         st.markdown("---")
         st.subheader("🧠 決策大腦深度解析 (Gemini AI)")
         
-        data_status = "【完全體：已融合 BOSS 上傳之機構私房數據】" if m['advanced'] else "【降規模式：目前缺乏高階基本面數據，請提醒 BOSS 上傳】"
+        data_status = "【完全體：已融合 BOSS 上傳之 CSV 機構數據】" if m['advanced'] else "【降規模式：缺乏高階基本面數據，請提醒 BOSS 上傳】"
         prompt = f"""
-        你是一位華爾街頂級量化分析師 (DD 模式)。當前狀態：{data_status}。
+        你是一位華爾街頂級量化分析師 (DD 模式)。狀態：{data_status}。
         目標：{stock_target} | 市場定調：{mode_select} | 戰略模組：{strategy_select}
-        當前燈號：{light_color} - {advice}
+        燈號：{light_color} - {advice}
         量化基準數據：股價 {m['price']:.2f}, P/E {m['pe']:.2f}, PEG {m['peg']:.2f}, RVOL {m['rvol']:.2f}, VCP {m['vcp']:.2f}%, VWAP {m['vwap']:.2f}, ATR {m['atr_pct']:.2f}%
-        BOSS 上傳之機構私房數據：{m['advanced']}
+        BOSS CSV 私房數據：{m['advanced']}
         
         絕對約束：
-        1. 【語言鐵律】：繁體中文。
-        2. 【格式鐵律】：嚴格依照「1.可行結論、2.核心依據、3.執行步驟、4.風險與替代方案」輸出。
+        1. 【語言鐵律】：必須全篇使用「繁體中文 (Traditional Chinese)」，嚴禁簡體字。
+        2. 【格式鐵律】：嚴格依照「1.可行結論、2.核心依據、3.執行步驟、4.風險與替代方案」四段結構。
         """
         
         try:
@@ -144,8 +154,7 @@ if analyze_button:
                     full_report = ""
                     
                     for chunk in response:
-                        # 🚨 這裡就是修復「神經質保全」崩潰的核心防護網！
-                        if chunk.parts: 
+                        if chunk.parts: # 🚨 神經質保全防護網：過濾空包裹
                             full_report += chunk.text
                             res_box.markdown(full_report + "▌")
                             
@@ -154,16 +163,14 @@ if analyze_button:
                     st.success(f"✅ 成功透過 **{model_name}** 完成報告。")
                     break
                 except Exception as e:
-                    # 如果只是單一模型抽風，記錄下來換下一個
                     error_logs.append(f"⚠️ **{model_name}** 執行異常：`{e}`")
                     continue
             
             if not success: 
-                # 判斷是否其實已經印出報告，只是結尾當機
                 if len(full_report) > 50:
                     st.warning("⚠️ 報告結尾遭遇串流中斷，但主要內容已成功保存。")
                 else:
-                    st.error("❌ 所有 AI 模型均拒絕連線 (429額度耗盡/400)。錯誤明細：")
+                    st.error("❌ 所有 AI 模型均拒絕連線。錯誤明細：")
                     for err in error_logs: st.info(err)
                     
         except Exception as e: st.error(f"❌ 系統連線基礎異常: {e}")
