@@ -4,27 +4,52 @@ import pandas as pd
 import ta
 import google.generativeai as genai
 
-# --- 1. 核心運算引擎 (雙軌 HITL 支援) ---
-def calculate_quant_matrix(ticker_obj, df, advanced_df, rvol_threshold, vcp_threshold):
+# --- 1. 核心運算引擎 (修復 NoneType 毒性與變數作用域) ---
+def calculate_quant_matrix(ticker_obj, df, advanced_df, target_symbol):
     info = ticker_obj.info
+    
+    # 【資安級數據清洗】防止 Yahoo Finance 回傳 None 導致 TypeError 崩潰
+    pe_raw = info.get('trailingPE')
+    pe = float(pe_raw) if pe_raw is not None else 0.0
+    
+    pb_raw = info.get('priceToBook')
+    pb = float(pb_raw) if pb_raw is not None else 0.0
+    
+    eps_g_raw = info.get('earningsQuarterlyGrowth')
+    eps_g = float(eps_g_raw) * 100 if eps_g_raw is not None else 0.0
+    
+    beta_raw = info.get('beta')
+    beta = float(beta_raw) if beta_raw is not None else 1.0
+
+    # 安全計算 PEG
+    peg = (pe / eps_g) if (eps_g > 0 and pe > 0) else 999.0
+
+    # 計算量價技術指標
+    vol_20ma = df['Volume'].rolling(window=20).mean()
+    rvol = df['Volume'].iloc[-1] / vol_20ma.iloc[-1] if not vol_20ma.empty and vol_20ma.iloc[-1] > 0 else 0
+    vcp = (df['High'].tail(5).max() - df['Low'].tail(5).min()) / df['Low'].tail(5).min() * 100
+    vwap = ta.volume.VolumeWeightedAveragePrice(high=df['High'], low=df['Low'], close=df['Close'], volume=df['Volume']).volume_weighted_average_price().iloc[-1]
+    atr_pct = (ta.volatility.AverageTrueRange(high=df['High'], low=df['Low'], close=df['Close']).average_true_range().iloc[-1] / df['Close'].iloc[-1]) * 100
+
     m = {
         "price": df['Close'].iloc[-1],
         "volume": df['Volume'].iloc[-1],
-        "pe": info.get('trailingPE', 0.0),
-        "pb": info.get('priceToBook', 0.0),
-        "beta": info.get('beta', 1.0),
-        "peg": (info.get('trailingPE', 0.0) / (info.get('earningsQuarterlyGrowth', 0) * 100)) if info.get('earningsQuarterlyGrowth', 0) > 0 else 999.0,
-        "rvol": df['Volume'].iloc[-1] / df['Volume'].rolling(window=20).mean().iloc[-1] if not df['Volume'].rolling(window=20).mean().empty else 0,
-        "vcp": (df['High'].tail(5).max() - df['Low'].tail(5).min()) / df['Low'].tail(5).min() * 100,
-        "vwap": ta.volume.VolumeWeightedAveragePrice(high=df['High'], low=df['Low'], close=df['Close'], volume=df['Volume']).volume_weighted_average_price().iloc[-1],
-        "atr_pct": (ta.volatility.AverageTrueRange(high=df['High'], low=df['Low'], close=df['Close']).average_true_range().iloc[-1] / df['Close'].iloc[-1]) * 100
+        "pe": pe,
+        "pb": pb,
+        "beta": beta,
+        "peg": peg,
+        "rvol": rvol,
+        "vcp": vcp,
+        "vwap": vwap,
+        "atr_pct": atr_pct
     }
     
     # [無限擴充架構] 動態吸收 CSV 機構級數據
     m["advanced"] = {}
     if advanced_df is not None:
         try:
-            row_dict = advanced_df[advanced_df['股號'] == stock_target].iloc[0].to_dict()
+            # 修正全域變數污染，改用傳入的 target_symbol
+            row_dict = advanced_df[advanced_df['股號'] == target_symbol].iloc[0].to_dict()
             row_dict.pop('股號', None)
             m["advanced"] = {str(k): v for k, v in row_dict.items() if pd.notna(v)}
         except Exception:
@@ -94,7 +119,8 @@ if analyze_button:
         hist = ticker.history(period="1y")
         if hist.empty or len(hist) < 20: st.error("❌ 查無資料或標的已下市"); st.stop()
         
-        m = calculate_quant_matrix(ticker, hist, advanced_data, r_thresh, v_thresh)
+        # 修正函數調用，傳入 stock_target 解決變數作用域問題
+        m = calculate_quant_matrix(ticker, hist, advanced_data, stock_target)
         
         # 執行 PEG 覆蓋邏輯
         if manual_override:
@@ -108,7 +134,7 @@ if analyze_button:
         with col2:
             st.subheader("核心量化指標")
             st.metric("P/E", f"{m['pe']:.2f}")
-            st.metric("PEG", f"{m['peg']:.2f}", delta="手動覆蓋" if manual_override else ("數據缺失" if m['peg'] == 999 else None))
+            st.metric("PEG", f"{m['peg']:.2f}", delta="手動覆蓋" if manual_override else ("數據缺失" if m['peg'] == 999.0 else None))
             st.metric("RVOL", f"{m['rvol']:.2f}x")
             st.metric("VCP", f"{m['vcp']:.2f}%")
             
@@ -154,7 +180,7 @@ if analyze_button:
                     full_report = ""
                     
                     for chunk in response:
-                        if chunk.parts: # 🚨 神經質保全防護網：過濾空包裹
+                        if chunk.parts: 
                             full_report += chunk.text
                             res_box.markdown(full_report + "▌")
                             
