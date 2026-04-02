@@ -4,45 +4,54 @@ import pandas as pd
 import ta
 import google.generativeai as genai
 
-# --- 1. 核心運算引擎 (雙軌 HITL 支援) ---
+# --- 1. 核心運算引擎 (防彈級重構版) ---
 def calculate_quant_matrix(ticker_obj, df, advanced_df, target_symbol):
     info = ticker_obj.info
     
-    pe_raw = info.get('trailingPE')
-    pe = float(pe_raw) if pe_raw is not None else 0.0
-    
-    pb_raw = info.get('priceToBook')
-    pb = float(pb_raw) if pb_raw is not None else 0.0
-    
-    eps_g_raw = info.get('earningsQuarterlyGrowth')
-    eps_g = float(eps_g_raw) * 100 if eps_g_raw is not None else 0.0
-    
-    beta_raw = info.get('beta')
-    beta = float(beta_raw) if beta_raw is not None else 1.0
+    # 【資安級數據清洗】防禦 None 與空字串導致的 ValueError
+    def safe_float(val, default=0.0):
+        try:
+            return float(val) if val is not None and str(val).strip() != "" else default
+        except (ValueError, TypeError):
+            return default
 
+    pe = safe_float(info.get('trailingPE'))
+    pb = safe_float(info.get('priceToBook'))
+    eps_g = safe_float(info.get('earningsQuarterlyGrowth')) * 100
+    beta = safe_float(info.get('beta'), default=1.0)
+
+    # 基礎估值與量價
     peg = (pe / eps_g) if (eps_g > 0 and pe > 0) else 999.0
-
     vol_20ma = df['Volume'].rolling(window=20).mean()
     rvol = df['Volume'].iloc[-1] / vol_20ma.iloc[-1] if not vol_20ma.empty and vol_20ma.iloc[-1] > 0 else 0
-    vcp = (df['High'].tail(5).max() - df['Low'].tail(5).min()) / df['Low'].tail(5).min() * 100
+    
+    # 【極端值防護】防止妖股股價為 0 導致 Divide by Zero
+    low_min = df['Low'].tail(5).min()
+    vcp = ((df['High'].tail(5).max() - low_min) / low_min * 100) if low_min > 0 else 0
+    
     vwap = ta.volume.VolumeWeightedAveragePrice(high=df['High'], low=df['Low'], close=df['Close'], volume=df['Volume']).volume_weighted_average_price().iloc[-1]
-    atr_pct = (ta.volatility.AverageTrueRange(high=df['High'], low=df['Low'], close=df['Close']).average_true_range().iloc[-1] / df['Close'].iloc[-1]) * 100
+    close_price = df['Close'].iloc[-1]
+    atr_pct = (ta.volatility.AverageTrueRange(high=df['High'], low=df['Low'], close=df['Close']).average_true_range().iloc[-1] / close_price * 100) if close_price > 0 else 0
 
     m = {
-        "price": df['Close'].iloc[-1],
-        "volume": df['Volume'].iloc[-1],
+        "price": close_price, "volume": df['Volume'].iloc[-1],
         "pe": pe, "pb": pb, "beta": beta, "peg": peg,
         "rvol": rvol, "vcp": vcp, "vwap": vwap, "atr_pct": atr_pct
     }
     
+    # [無限擴充架構] 動態吸收 CSV 機構級數據，並防禦 IndexError
     m["advanced"] = {}
     if advanced_df is not None:
         try:
-            row_dict = advanced_df[advanced_df['股號'] == target_symbol].iloc[0].to_dict()
-            row_dict.pop('股號', None)
-            m["advanced"] = {str(k): v for k, v in row_dict.items() if pd.notna(v)}
-        except Exception:
-            st.sidebar.error("❌ CSV 股號不匹配或格式有誤")
+            matched_row = advanced_df[advanced_df['股號'] == target_symbol]
+            if not matched_row.empty:
+                row_dict = matched_row.iloc[0].to_dict()
+                row_dict.pop('股號', None)
+                m["advanced"] = {str(k): v for k, v in row_dict.items() if pd.notna(v)}
+            else:
+                st.sidebar.warning(f"⚠️ 降規模式：CSV 中找不到標的 {target_symbol}")
+        except Exception as e:
+            st.sidebar.error(f"❌ CSV 解析失敗: {e}")
             
     return m
 
@@ -69,7 +78,7 @@ try:
 except:
     st.error("❌ 缺失 API Key"); st.stop()
 
-# --- 4. 側邊欄：戰略控制台 (UI 空間優化) ---
+# --- 4. 側邊欄：戰略控制台 ---
 st.sidebar.header("⚙️ 戰略控制台")
 stock_target = st.sidebar.text_input("🎯 目標股號", "2206.TW")
 mode_select = st.sidebar.radio("市場定調", ["白馬股 (價值/已驗證)", "黑馬潛力股 (轉機/突破)"])
@@ -77,12 +86,10 @@ strategy_select = st.sidebar.selectbox("戰略模組", ["穩健型 (合理成長
 
 st.sidebar.markdown("---")
 
-# 🚨 【UI 優化】把不常用的滑桿「收合」起來，節省垂直空間！
 with st.sidebar.expander("🎚️ 戰略參數微調 (點擊展開)", expanded=False):
     r_thresh = st.slider("RVOL 爆量閾值", 1.0, 5.0, 2.0, 0.1)
     v_thresh = st.slider("VCP 壓縮限度 (%)", 1.0, 10.0, 5.0, 0.5)
 
-# [HITL 軌道 2] 擴充 CSV 上傳 (優先顯示於畫面上方)
 st.sidebar.subheader("📁 HITL 進階私房數據")
 uploaded_file = st.sidebar.file_uploader("上傳 .csv 檔案 (解鎖進階分析)", type="csv")
 advanced_data = None
@@ -94,14 +101,12 @@ else:
 
 st.sidebar.markdown("---")
 
-# [HITL 軌道 1] 手動覆蓋 PEG (放在最下方)
 st.sidebar.subheader("🛠️ HITL 基礎人工校準")
 manual_override = st.sidebar.toggle("啟用 PEG 數據覆蓋")
 hitl_peg = 999.0
 if manual_override:
     hitl_peg = st.sidebar.number_input("手動修正 PEG 數據", 0.0, 10.0, 1.2, 0.1)
 
-# 按鈕也放大
 st.sidebar.markdown("<br>", unsafe_allow_html=True)
 analyze_button = st.sidebar.button("🚀 啟動深度量化解析", use_container_width=True, type="primary")
 
