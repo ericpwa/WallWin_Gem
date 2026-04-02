@@ -4,11 +4,10 @@ import pandas as pd
 import ta
 import google.generativeai as genai
 
-# --- 1. 核心運算引擎 (修復 NoneType 毒性與變數作用域) ---
+# --- 1. 核心運算引擎 (雙軌 HITL 支援) ---
 def calculate_quant_matrix(ticker_obj, df, advanced_df, target_symbol):
     info = ticker_obj.info
     
-    # 【資安級數據清洗】防止 Yahoo Finance 回傳 None 導致 TypeError 崩潰
     pe_raw = info.get('trailingPE')
     pe = float(pe_raw) if pe_raw is not None else 0.0
     
@@ -21,10 +20,8 @@ def calculate_quant_matrix(ticker_obj, df, advanced_df, target_symbol):
     beta_raw = info.get('beta')
     beta = float(beta_raw) if beta_raw is not None else 1.0
 
-    # 安全計算 PEG
     peg = (pe / eps_g) if (eps_g > 0 and pe > 0) else 999.0
 
-    # 計算量價技術指標
     vol_20ma = df['Volume'].rolling(window=20).mean()
     rvol = df['Volume'].iloc[-1] / vol_20ma.iloc[-1] if not vol_20ma.empty and vol_20ma.iloc[-1] > 0 else 0
     vcp = (df['High'].tail(5).max() - df['Low'].tail(5).min()) / df['Low'].tail(5).min() * 100
@@ -34,21 +31,13 @@ def calculate_quant_matrix(ticker_obj, df, advanced_df, target_symbol):
     m = {
         "price": df['Close'].iloc[-1],
         "volume": df['Volume'].iloc[-1],
-        "pe": pe,
-        "pb": pb,
-        "beta": beta,
-        "peg": peg,
-        "rvol": rvol,
-        "vcp": vcp,
-        "vwap": vwap,
-        "atr_pct": atr_pct
+        "pe": pe, "pb": pb, "beta": beta, "peg": peg,
+        "rvol": rvol, "vcp": vcp, "vwap": vwap, "atr_pct": atr_pct
     }
     
-    # [無限擴充架構] 動態吸收 CSV 機構級數據
     m["advanced"] = {}
     if advanced_df is not None:
         try:
-            # 修正全域變數污染，改用傳入的 target_symbol
             row_dict = advanced_df[advanced_df['股號'] == target_symbol].iloc[0].to_dict()
             row_dict.pop('股號', None)
             m["advanced"] = {str(k): v for k, v in row_dict.items() if pd.notna(v)}
@@ -73,44 +62,48 @@ def get_traffic_light(m, mode, strategy, r_thresh, v_thresh):
 
 # --- 3. 頁面初始化 ---
 st.set_page_config(page_title="WallWin Gem 量化系統", layout="wide")
-st.title("🛡️ WallWin Gem 戰略指揮中心 (大統一完全體)")
+st.title("🛡️ WallWin Gem 戰略指揮中心 (完全體)")
 
 try:
     genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
 except:
     st.error("❌ 缺失 API Key"); st.stop()
 
-# --- 4. 側邊欄：戰略控制台 (整合雙軌 HITL) ---
+# --- 4. 側邊欄：戰略控制台 (UI 空間優化) ---
 st.sidebar.header("⚙️ 戰略控制台")
 stock_target = st.sidebar.text_input("🎯 目標股號", "2206.TW")
 mode_select = st.sidebar.radio("市場定調", ["白馬股 (價值/已驗證)", "黑馬潛力股 (轉機/突破)"])
 strategy_select = st.sidebar.selectbox("戰略模組", ["穩健型 (合理成長)", "保守型 (防禦/股息)", "積極型 (動能/短線)"])
 
 st.sidebar.markdown("---")
-st.sidebar.subheader("🎚️ 戰略敏感度微調")
-r_thresh = st.sidebar.slider("RVOL 爆量閾值", 1.0, 5.0, 2.0, 0.1)
-v_thresh = st.sidebar.slider("VCP 壓縮限度 (%)", 1.0, 10.0, 5.0, 0.5)
 
-# [HITL 軌道 1] 手動覆蓋 PEG
+# 🚨 【UI 優化】把不常用的滑桿「收合」起來，節省垂直空間！
+with st.sidebar.expander("🎚️ 戰略參數微調 (點擊展開)", expanded=False):
+    r_thresh = st.slider("RVOL 爆量閾值", 1.0, 5.0, 2.0, 0.1)
+    v_thresh = st.slider("VCP 壓縮限度 (%)", 1.0, 10.0, 5.0, 0.5)
+
+# [HITL 軌道 2] 擴充 CSV 上傳 (優先顯示於畫面上方)
+st.sidebar.subheader("📁 HITL 進階私房數據")
+uploaded_file = st.sidebar.file_uploader("上傳 .csv 檔案 (解鎖進階分析)", type="csv")
+advanced_data = None
+if uploaded_file:
+    advanced_data = pd.read_csv(uploaded_file)
+    st.sidebar.success("✅ 私房數據已掛載，大腦解鎖！")
+else:
+    st.sidebar.warning("⚠️ 降規模式：未掛載 CSV")
+
 st.sidebar.markdown("---")
+
+# [HITL 軌道 1] 手動覆蓋 PEG (放在最下方)
 st.sidebar.subheader("🛠️ HITL 基礎人工校準")
 manual_override = st.sidebar.toggle("啟用 PEG 數據覆蓋")
 hitl_peg = 999.0
 if manual_override:
     hitl_peg = st.sidebar.number_input("手動修正 PEG 數據", 0.0, 10.0, 1.2, 0.1)
 
-# [HITL 軌道 2] 擴充 CSV 上傳
-st.sidebar.markdown("---")
-st.sidebar.subheader("📁 HITL 進階私房數據 (CSV)")
-uploaded_file = st.sidebar.file_uploader("上傳 .csv 檔案 (解鎖進階分析)", type="csv")
-advanced_data = None
-if uploaded_file:
-    advanced_data = pd.read_csv(uploaded_file)
-    st.sidebar.success("✅ 私房數據已掛載，大腦權限解鎖！")
-else:
-    st.sidebar.warning("⚠️ 降規模式：未掛載 CSV 數據")
-
-analyze_button = st.sidebar.button("🚀 啟動深度量化解析", use_container_width=True)
+# 按鈕也放大
+st.sidebar.markdown("<br>", unsafe_allow_html=True)
+analyze_button = st.sidebar.button("🚀 啟動深度量化解析", use_container_width=True, type="primary")
 
 # --- 5. 運算與 UI 展示 ---
 if analyze_button:
@@ -119,10 +112,8 @@ if analyze_button:
         hist = ticker.history(period="1y")
         if hist.empty or len(hist) < 20: st.error("❌ 查無資料或標的已下市"); st.stop()
         
-        # 修正函數調用，傳入 stock_target 解決變數作用域問題
         m = calculate_quant_matrix(ticker, hist, advanced_data, stock_target)
         
-        # 執行 PEG 覆蓋邏輯
         if manual_override:
             m['peg'] = hitl_peg
             st.warning(f"🛠️ HITL 介入：已手動將 PEG 覆蓋為 {hitl_peg}")
