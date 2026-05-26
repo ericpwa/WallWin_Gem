@@ -37,6 +37,30 @@ def require_app_password():
     st.stop()
 
 
+def truthy_secret(name, default=False):
+    value = get_secret_value(name, "true" if default else "false").lower()
+    return value in {"1", "true", "yes", "y", "on"}
+
+
+def resolve_ai_api_key():
+    allow_owner_key = truthy_secret("ALLOW_OWNER_KEY", default=False)
+    owner_key = get_secret_value("GEMINI_API_KEY") if allow_owner_key else ""
+
+    st.sidebar.markdown("---")
+    st.sidebar.subheader("🔑 AI 報告 API Key")
+    if allow_owner_key and owner_key:
+        st.sidebar.success("Owner Key 模式已啟用")
+        return owner_key, "owner"
+
+    user_key = st.sidebar.text_input(
+        "Gemini API Key（由使用者自備）",
+        type="password",
+        help="Key 只保存在目前瀏覽器工作階段，不會寫入 GitHub 或 App 檔案。",
+    ).strip()
+    st.sidebar.caption("外部使用者若要產生 AI 報告，必須使用自己的 Gemini API Key。")
+    return user_key, "user" if user_key else "missing"
+
+
 def safe_float(val, default=0.0):
     try:
         if val is None or str(val).strip() == "":
@@ -693,14 +717,9 @@ st.title("🛡️ WallWin Gem 投審量化指揮中心")
 st.caption("投資審核流程 + 主流技術分析共識模型；輸出為研究輔助，不構成投資建議。")
 require_app_password()
 
-try:
-    genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
-except Exception:
-    st.error("❌ 缺失 API Key")
-    st.stop()
-
 # --- 4. 側邊欄：戰略控制台 ---
 st.sidebar.header("⚙️ 戰略控制台")
+ai_api_key, ai_key_source = resolve_ai_api_key()
 stock_target = st.sidebar.text_input("🎯 目標股號", "2206.TW")
 trading_style = st.sidebar.radio("交易週期", ["波段/投資", "當沖"], horizontal=True)
 mode_select = st.sidebar.radio("市場定調", ["白馬股 (價值/已驗證)", "黑馬潛力股 (轉機/突破)"])
@@ -765,6 +784,9 @@ if scan_button:
     symbols = parse_watchlist(watchlist_symbols)
     if not symbols:
         st.error("請至少輸入一個股票代號。")
+        st.stop()
+    if len(symbols) > 20:
+        st.error("為避免公開 App 被濫用，Watchlist 單次最多掃描 20 檔。")
         st.stop()
 
     rows = []
@@ -982,6 +1004,15 @@ if analyze_button:
 
         with tab_ai:
             st.subheader("🧠 決策大腦深度解析 (Gemini AI)")
+            if not ai_api_key:
+                st.warning("🔒 AI 報告已鎖定：請在左側輸入自己的 Gemini API Key。未輸入 Key 時，本 App 不會呼叫 Gemini，也不會消耗部署者額度。")
+                st.stop()
+
+            genai.configure(api_key=ai_api_key)
+            if ai_key_source == "user":
+                st.info("目前使用：使用者自備 Gemini API Key。此 Key 不會寫入 GitHub 或 Streamlit Secrets。")
+            else:
+                st.warning("目前使用：Owner Gemini API Key。若要開放外部使用，請不要啟用 ALLOW_OWNER_KEY。")
 
             data_status = "【完全體：已融合 BOSS 上傳之 CSV 機構數據】" if m["advanced"] else "【降規模式：缺乏高階基本面數據，請提醒 BOSS 上傳】"
             prompt = f"""
