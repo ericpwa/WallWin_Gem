@@ -10,6 +10,33 @@ DAYTRADE_INTERVAL = "5m"
 DAYTRADE_PERIOD = "5d"
 
 
+def get_secret_value(name, default=""):
+    try:
+        return str(st.secrets.get(name, default)).strip()
+    except Exception:
+        return default
+
+
+def require_app_password():
+    app_password = get_secret_value("APP_PASSWORD")
+    if not app_password:
+        st.warning("⚠️ 尚未設定 APP_PASSWORD；公開部署時建議在 Streamlit Secrets 加上密碼防護。")
+        return
+
+    if st.session_state.get("authenticated"):
+        return
+
+    st.subheader("🔐 WallWin Gem 存取驗證")
+    password = st.text_input("請輸入 App 密碼", type="password")
+    if st.button("登入", type="primary"):
+        if password == app_password:
+            st.session_state["authenticated"] = True
+            st.rerun()
+        else:
+            st.error("密碼錯誤，請重新輸入。")
+    st.stop()
+
+
 def safe_float(val, default=0.0):
     try:
         if val is None or str(val).strip() == "":
@@ -166,6 +193,84 @@ def calculate_daytrade_matrix(intraday_df):
         "short_bias_score": short_bias_score,
         "bar_count": len(session),
     }
+
+
+def run_signal_backtest(df, max_atr=5.0, min_rvol=1.2, holding_days=20):
+    df = df.copy().dropna(subset=["Open", "High", "Low", "Close", "Volume"])
+    if len(df) < 120:
+        return None, {"狀態": "資料不足，至少需要 120 個交易日"}
+
+    close = df["Close"]
+    high = df["High"]
+    low = df["Low"]
+    volume = df["Volume"]
+    ma20 = close.rolling(20).mean()
+    ma50 = close.rolling(50).mean()
+    ma200 = close.rolling(200).mean()
+    rsi = ta.momentum.RSIIndicator(close=close).rsi()
+    macd_diff = ta.trend.MACD(close=close).macd_diff()
+    atr_pct = ta.volatility.AverageTrueRange(high=high, low=low, close=close).average_true_range() / close * 100
+    rvol = volume / volume.rolling(20).mean()
+
+    signal = (
+        (close > ma20)
+        & (close > ma50)
+        & ((ma200.isna()) | (close > ma200))
+        & (rsi.between(45, 70))
+        & (macd_diff > 0)
+        & (atr_pct <= max_atr)
+        & (rvol >= min_rvol)
+    )
+
+    trades = []
+    last_exit_idx = -1
+    for idx in range(60, len(df) - holding_days):
+        if idx <= last_exit_idx or not bool(signal.iloc[idx]):
+            continue
+        entry = safe_float(close.iloc[idx])
+        future = close.iloc[idx + 1 : idx + holding_days + 1]
+        if future.empty or entry <= 0:
+            continue
+        exit_price = safe_float(future.iloc[-1])
+        max_gain = (safe_float(future.max()) - entry) / entry * 100
+        max_drawdown = (safe_float(future.min()) - entry) / entry * 100
+        ret = (exit_price - entry) / entry * 100
+        trades.append(
+            {
+                "進場日": df.index[idx].date() if hasattr(df.index[idx], "date") else df.index[idx],
+                "進場價": round(entry, 2),
+                "出場價": round(exit_price, 2),
+                "持有日": holding_days,
+                "報酬率%": round(ret, 2),
+                "期間最大漲幅%": round(max_gain, 2),
+                "期間最大回撤%": round(max_drawdown, 2),
+            }
+        )
+        last_exit_idx = idx + holding_days
+
+    trades_df = pd.DataFrame(trades)
+    if trades_df.empty:
+        return trades_df, {"狀態": "回測期間沒有符合條件的訊號"}
+
+    returns = trades_df["報酬率%"]
+    wins = returns[returns > 0]
+    losses = returns[returns <= 0]
+    stats = {
+        "交易次數": len(trades_df),
+        "勝率%": round(len(wins) / len(trades_df) * 100, 1),
+        "平均報酬%": round(returns.mean(), 2),
+        "中位數報酬%": round(returns.median(), 2),
+        "最佳單筆%": round(returns.max(), 2),
+        "最差單筆%": round(returns.min(), 2),
+        "平均最大回撤%": round(trades_df["期間最大回撤%"].mean(), 2),
+        "盈虧比": round(abs(wins.mean() / losses.mean()), 2) if not wins.empty and not losses.empty and losses.mean() != 0 else 0,
+    }
+    return trades_df, stats
+
+
+def parse_watchlist(raw_text):
+    tokens = raw_text.replace("\n", ",").replace("，", ",").split(",")
+    return [token.strip().upper() for token in tokens if token.strip()]
 
 
 # --- 1. 核心運算引擎：投審 + 主流技術分析版 ---
@@ -586,6 +691,7 @@ def build_trade_plan(m, strategy, trading_style="波段/投資", daytrade=None, 
 st.set_page_config(page_title="WallWin Gem 量化系統", layout="wide")
 st.title("🛡️ WallWin Gem 投審量化指揮中心")
 st.caption("投資審核流程 + 主流技術分析共識模型；輸出為研究輔助，不構成投資建議。")
+require_app_password()
 
 try:
     genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
@@ -645,6 +751,76 @@ if manual_override:
 
 st.sidebar.markdown("<br>", unsafe_allow_html=True)
 analyze_button = st.sidebar.button("🚀 啟動深度量化解析", use_container_width=True, type="primary")
+
+st.sidebar.markdown("---")
+st.sidebar.subheader("📡 Watchlist 多檔掃描")
+watchlist_symbols = st.sidebar.text_area(
+    "股票清單（逗號或換行分隔）",
+    "2330.TW, 2317.TW, 2454.TW, 2206.TW",
+    height=90,
+)
+scan_button = st.sidebar.button("📡 掃描 Watchlist", use_container_width=True)
+
+if scan_button:
+    symbols = parse_watchlist(watchlist_symbols)
+    if not symbols:
+        st.error("請至少輸入一個股票代號。")
+        st.stop()
+
+    rows = []
+    progress = st.progress(0, text="Watchlist 掃描中")
+    for idx, symbol in enumerate(symbols, start=1):
+        try:
+            ticker = yf.Ticker(symbol)
+            hist = ticker.history(period="1y")
+            if hist.empty or len(hist) < 60:
+                rows.append({"股號": symbol, "狀態": "資料不足"})
+                continue
+            m = calculate_quant_matrix(ticker, hist, advanced_data, symbol)
+            light, advice, audit_items = get_traffic_light(
+                m,
+                mode_select,
+                strategy_select,
+                r_thresh,
+                v_thresh,
+                min_volume,
+                max_atr,
+                "波段/投資",
+            )
+            failed_hard = sum(1 for item in audit_items if not item["passed"] and item["severity"] == "hard")
+            rows.append(
+                {
+                    "股號": symbol,
+                    "燈號": light,
+                    "技術分數": m["technical_score"],
+                    "分級": m["score_bucket"],
+                    "價格": round(m["price"], 2),
+                    "成交量(張)": round(m["volume"] / 1000, 0),
+                    "RVOL": round(m["rvol"], 2),
+                    "VCP%": round(m["vcp"], 2),
+                    "RSI": round(m["rsi"], 1),
+                    "ATR%": round(m["atr_pct"], 2),
+                    "硬門檻失敗": failed_hard,
+                    "摘要": advice,
+                    "狀態": "OK",
+                }
+            )
+        except Exception as e:
+            rows.append({"股號": symbol, "狀態": f"錯誤：{e}"})
+        progress.progress(idx / len(symbols), text=f"Watchlist 掃描中：{idx}/{len(symbols)}")
+
+    progress.empty()
+    result_df = pd.DataFrame(rows)
+    if "技術分數" in result_df.columns:
+        result_df = result_df.sort_values(["狀態", "硬門檻失敗", "技術分數"], ascending=[True, True, False])
+    st.subheader("📡 Watchlist 多檔掃描結果")
+    st.dataframe(result_df, use_container_width=True, hide_index=True)
+    st.download_button(
+        "下載 Watchlist CSV",
+        result_df.to_csv(index=False).encode("utf-8-sig"),
+        file_name="wallwin_watchlist.csv",
+        mime="text/csv",
+    )
 
 # --- 5. 運算與 UI 展示 ---
 if analyze_button:
@@ -707,9 +883,9 @@ if analyze_button:
             st.metric("ADX", f"{m['adx']:.1f}")
 
         if trading_style == "當沖":
-            tab_audit, tab_tech, tab_daytrade, tab_plan, tab_ai = st.tabs(["投審檢核", "技術面", "當沖", "交易計畫", "AI 報告"])
+            tab_audit, tab_tech, tab_daytrade, tab_backtest, tab_plan, tab_ai = st.tabs(["投審檢核", "技術面", "當沖", "回測", "交易計畫", "AI 報告"])
         else:
-            tab_audit, tab_tech, tab_plan, tab_ai = st.tabs(["投審檢核", "技術面", "交易計畫", "AI 報告"])
+            tab_audit, tab_tech, tab_backtest, tab_plan, tab_ai = st.tabs(["投審檢核", "技術面", "回測", "交易計畫", "AI 報告"])
 
         with tab_audit:
             st.subheader("🚦 戰術判定燈號")
@@ -765,6 +941,34 @@ if analyze_button:
                         ),
                         text=f"{daytrade_direction} 當沖方向分數",
                     )
+
+        with tab_backtest:
+            st.subheader("📈 簡易訊號回測")
+            backtest_days = st.slider("持有天數", 5, 60, 20, 5)
+            backtest_rvol = st.slider("回測 RVOL 門檻", 1.0, 3.0, 1.2, 0.1)
+            trades_df, stats = run_signal_backtest(hist, max_atr=max_atr, min_rvol=backtest_rvol, holding_days=backtest_days)
+
+            if trades_df is None or trades_df.empty:
+                st.warning(stats.get("狀態", "沒有可顯示的回測結果"))
+            else:
+                stat_cols = st.columns(4)
+                stat_cols[0].metric("交易次數", stats["交易次數"])
+                stat_cols[1].metric("勝率", f"{stats['勝率%']:.1f}%")
+                stat_cols[2].metric("平均報酬", f"{stats['平均報酬%']:.2f}%")
+                stat_cols[3].metric("最差單筆", f"{stats['最差單筆%']:.2f}%")
+                st.write(
+                    f"中位數報酬：**{stats['中位數報酬%']:.2f}%** │ "
+                    f"最佳單筆：**{stats['最佳單筆%']:.2f}%** │ "
+                    f"平均最大回撤：**{stats['平均最大回撤%']:.2f}%** │ "
+                    f"盈虧比：**{stats['盈虧比']:.2f}**"
+                )
+                st.dataframe(trades_df.tail(30), use_container_width=True, hide_index=True)
+                st.download_button(
+                    "下載回測交易明細 CSV",
+                    trades_df.to_csv(index=False).encode("utf-8-sig"),
+                    file_name=f"{stock_target}_backtest.csv",
+                    mime="text/csv",
+                )
 
         with tab_plan:
             st.subheader("📌 執行框架")
