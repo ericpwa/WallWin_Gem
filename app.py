@@ -4,98 +4,634 @@ import pandas as pd
 import ta
 import google.generativeai as genai
 
-# --- 1. 核心運算引擎 (防彈級重構版) ---
-def calculate_quant_matrix(ticker_obj, df, advanced_df, target_symbol):
-    info = ticker_obj.info
-    
-    def safe_float(val, default=0.0):
-        try:
-            return float(val) if val is not None and str(val).strip() != "" else default
-        except (ValueError, TypeError):
-            return default
 
-    pe = safe_float(info.get('trailingPE'))
-    pb = safe_float(info.get('priceToBook'))
-    eps_g = safe_float(info.get('earningsQuarterlyGrowth')) * 100
-    beta = safe_float(info.get('beta'), default=1.0)
+MIN_ANALYSIS_DAYS = 200
+DAYTRADE_INTERVAL = "5m"
+DAYTRADE_PERIOD = "5d"
+
+
+def safe_float(val, default=0.0):
+    try:
+        if val is None or str(val).strip() == "":
+            return default
+        return float(val)
+    except (ValueError, TypeError):
+        return default
+
+
+def safe_last(series, default=0.0):
+    try:
+        value = series.dropna().iloc[-1]
+        return safe_float(value, default)
+    except (IndexError, AttributeError, ValueError, TypeError):
+        return default
+
+
+def pct_gap(price, base):
+    if base and base > 0:
+        return (price - base) / base * 100
+    return 0.0
+
+
+def score_bucket(score):
+    if score >= 80:
+        return "A"
+    if score >= 65:
+        return "B"
+    if score >= 50:
+        return "C"
+    return "D"
+
+
+def calc_valuation_score(peg, pb, dividend_yield):
+    valuation_score = 50
+    if peg < 0.75:
+        valuation_score += 25
+    elif peg <= 1.2:
+        valuation_score += 15
+    elif peg < 999:
+        valuation_score -= 15
+    if 0 < pb < 1.5:
+        valuation_score += 15
+    if dividend_yield >= 3:
+        valuation_score += 10
+    return min(max(valuation_score, 0), 100)
+
+
+def refresh_composite_score(m):
+    m["valuation_score"] = calc_valuation_score(
+        m["peg"], m["pb"], m["dividend_yield"]
+    )
+    m["technical_score"] = round(
+        m["trend_score"] * 0.35
+        + m["momentum_score"] * 0.25
+        + m["risk_score"] * 0.25
+        + m["valuation_score"] * 0.15,
+        1,
+    )
+    m["score_bucket"] = score_bucket(m["technical_score"])
+    return m
+
+
+def calculate_daytrade_matrix(intraday_df):
+    if intraday_df is None or intraday_df.empty:
+        return {"available": False, "reason": "查無 5 分鐘線資料"}
+
+    df = intraday_df.copy().dropna(subset=["Open", "High", "Low", "Close", "Volume"])
+    if df.empty or len(df) < 30:
+        return {"available": False, "reason": "5 分鐘線資料不足，無法建立當沖判讀"}
+
+    if isinstance(df.index, pd.DatetimeIndex):
+        latest_day = df.index.max().date()
+        session = df[df.index.date == latest_day].copy()
+    else:
+        session = df.tail(60).copy()
+
+    if len(session) < 12:
+        return {"available": False, "reason": "當日盤中資料不足，請於開盤後再評估"}
+
+    close = session["Close"]
+    high = session["High"]
+    low = session["Low"]
+    volume = session["Volume"]
+    price = safe_float(close.iloc[-1])
+    open_price = safe_float(session["Open"].iloc[0])
+    day_high = safe_float(high.max())
+    day_low = safe_float(low.min())
+    day_volume = safe_float(volume.sum())
+    avg_bar_volume = safe_float(df["Volume"].rolling(window=20).mean().dropna().tail(20).mean())
+    last_bar_volume = safe_float(volume.iloc[-1])
+    intraday_rvol = last_bar_volume / avg_bar_volume if avg_bar_volume > 0 else 0.0
+
+    typical_price = (high + low + close) / 3
+    cumulative_volume = volume.cumsum()
+    intraday_vwap = safe_float((typical_price * volume).cumsum().iloc[-1] / cumulative_volume.iloc[-1]) if cumulative_volume.iloc[-1] > 0 else 0.0
+    ema9 = safe_last(close.ewm(span=9, adjust=False).mean())
+    ema21 = safe_last(close.ewm(span=21, adjust=False).mean())
+    rsi_5m = safe_last(ta.momentum.RSIIndicator(close=close, window=14).rsi(), default=50.0)
+    macd_diff_5m = safe_last(ta.trend.MACD(close=close).macd_diff())
+    atr_5m = safe_last(ta.volatility.AverageTrueRange(high=high, low=low, close=close).average_true_range())
+    atr_5m_pct = atr_5m / price * 100 if price > 0 else 0.0
+
+    open_range = session.head(6)
+    orb_high = safe_float(open_range["High"].max())
+    orb_low = safe_float(open_range["Low"].min())
+    range_pct = pct_gap(day_high, day_low)
+    vwap_gap_pct = pct_gap(price, intraday_vwap)
+
+    long_bias_score = 0
+    if price > intraday_vwap > 0:
+        long_bias_score += 25
+    if ema9 > ema21 > 0:
+        long_bias_score += 20
+    if price > orb_high > 0:
+        long_bias_score += 25
+    if macd_diff_5m > 0:
+        long_bias_score += 15
+    if 45 <= rsi_5m <= 72:
+        long_bias_score += 15
+
+    short_bias_score = 0
+    if 0 < price < intraday_vwap:
+        short_bias_score += 25
+    if 0 < ema9 < ema21:
+        short_bias_score += 20
+    if 0 < price < orb_low:
+        short_bias_score += 25
+    if macd_diff_5m < 0:
+        short_bias_score += 15
+    if 28 <= rsi_5m <= 55:
+        short_bias_score += 15
+
+    return {
+        "available": True,
+        "price": price,
+        "open": open_price,
+        "day_high": day_high,
+        "day_low": day_low,
+        "day_volume": day_volume,
+        "intraday_rvol": intraday_rvol,
+        "intraday_vwap": intraday_vwap,
+        "vwap_gap_pct": vwap_gap_pct,
+        "ema9": ema9,
+        "ema21": ema21,
+        "rsi_5m": rsi_5m,
+        "macd_diff_5m": macd_diff_5m,
+        "atr_5m": atr_5m,
+        "atr_5m_pct": atr_5m_pct,
+        "orb_high": orb_high,
+        "orb_low": orb_low,
+        "range_pct": range_pct,
+        "long_bias_score": long_bias_score,
+        "short_bias_score": short_bias_score,
+        "bar_count": len(session),
+    }
+
+
+# --- 1. 核心運算引擎：投審 + 主流技術分析版 ---
+def calculate_quant_matrix(ticker_obj, df, advanced_df, target_symbol):
+    try:
+        info = ticker_obj.info or {}
+    except Exception:
+        info = {}
+
+    df = df.copy().dropna(subset=["Open", "High", "Low", "Close", "Volume"])
+    close = df["Close"]
+    high = df["High"]
+    low = df["Low"]
+    volume = df["Volume"]
+
+    pe = safe_float(info.get("trailingPE"))
+    pb = safe_float(info.get("priceToBook"))
+    eps_g = safe_float(info.get("earningsQuarterlyGrowth")) * 100
+    beta = safe_float(info.get("beta"), default=1.0)
+    dividend_yield = safe_float(info.get("dividendYield")) * 100
 
     peg = (pe / eps_g) if (eps_g > 0 and pe > 0) else 999.0
-    vol_20ma = df['Volume'].rolling(window=20).mean()
-    rvol = df['Volume'].iloc[-1] / vol_20ma.iloc[-1] if not vol_20ma.empty and vol_20ma.iloc[-1] > 0 else 0
-    
-    low_min = df['Low'].tail(5).min()
-    vcp = ((df['High'].tail(5).max() - low_min) / low_min * 100) if low_min > 0 else 0
-    
-    vwap = ta.volume.VolumeWeightedAveragePrice(high=df['High'], low=df['Low'], close=df['Close'], volume=df['Volume']).volume_weighted_average_price().iloc[-1]
-    close_price = df['Close'].iloc[-1]
-    atr_pct = (ta.volatility.AverageTrueRange(high=df['High'], low=df['Low'], close=df['Close']).average_true_range().iloc[-1] / close_price * 100) if close_price > 0 else 0
+    close_price = safe_float(close.iloc[-1])
+    last_volume = safe_float(volume.iloc[-1])
+
+    ma20 = close.rolling(window=20).mean()
+    ma50 = close.rolling(window=50).mean()
+    ma200 = close.rolling(window=200).mean()
+    vol_20ma = volume.rolling(window=20).mean()
+
+    rvol = last_volume / safe_last(vol_20ma) if safe_last(vol_20ma) > 0 else 0.0
+    low_min_20 = low.tail(20).min()
+    vcp = ((high.tail(20).max() - low_min_20) / low_min_20 * 100) if low_min_20 > 0 else 0.0
+    range_5 = pct_gap(high.tail(5).max(), low.tail(5).min())
+    range_20 = pct_gap(high.tail(20).max(), low.tail(20).min())
+    contraction_ratio = range_5 / range_20 if range_20 > 0 else 1.0
+
+    vwap = safe_last(
+        ta.volume.VolumeWeightedAveragePrice(
+            high=high, low=low, close=close, volume=volume
+        ).volume_weighted_average_price()
+    )
+    atr = ta.volatility.AverageTrueRange(high=high, low=low, close=close).average_true_range()
+    atr_pct = safe_last(atr) / close_price * 100 if close_price > 0 else 0.0
+    rsi = safe_last(ta.momentum.RSIIndicator(close=close).rsi(), default=50.0)
+    macd_diff = safe_last(ta.trend.MACD(close=close).macd_diff())
+    adx = safe_last(ta.trend.ADXIndicator(high=high, low=low, close=close).adx())
+    obv = ta.volume.OnBalanceVolumeIndicator(close=close, volume=volume).on_balance_volume()
+    obv_slope = safe_last(obv.diff(20))
+    bb = ta.volatility.BollingerBands(close=close)
+    bb_high = safe_last(bb.bollinger_hband())
+    bb_low = safe_last(bb.bollinger_lband())
+    bb_width = ((bb_high - bb_low) / close_price * 100) if close_price > 0 else 0.0
+
+    ma20_v = safe_last(ma20)
+    ma50_v = safe_last(ma50)
+    ma200_v = safe_last(ma200)
+    dollar_volume = close_price * last_volume
+
+    trend_score = 0
+    if close_price > ma20_v > 0:
+        trend_score += 15
+    if close_price > ma50_v > 0:
+        trend_score += 20
+    if ma50_v > ma200_v > 0:
+        trend_score += 20
+    if close_price > ma200_v > 0:
+        trend_score += 20
+    if adx >= 20:
+        trend_score += 10
+    if macd_diff > 0:
+        trend_score += 15
+
+    momentum_score = 0
+    if 45 <= rsi <= 70:
+        momentum_score += 30
+    elif 35 <= rsi < 45 or 70 < rsi <= 78:
+        momentum_score += 15
+    if rvol >= 1.5:
+        momentum_score += 25
+    if obv_slope > 0:
+        momentum_score += 20
+    if close_price >= vwap:
+        momentum_score += 15
+    if contraction_ratio <= 0.55:
+        momentum_score += 10
+
+    risk_score = 100
+    if atr_pct > 5:
+        risk_score -= 25
+    if atr_pct > 8:
+        risk_score -= 25
+    if last_volume < 200000:
+        risk_score -= 30
+    if ma50_v > 0 and pct_gap(close_price, ma50_v) > 20:
+        risk_score -= 20
+    if beta > 1.8:
+        risk_score -= 10
+    risk_score = max(risk_score, 0)
+
+    valuation_score = calc_valuation_score(peg, pb, dividend_yield)
+
+    technical_score = round(
+        trend_score * 0.35 + momentum_score * 0.25 + risk_score * 0.25 + valuation_score * 0.15,
+        1,
+    )
 
     m = {
-        "price": close_price, "volume": df['Volume'].iloc[-1],
-        "pe": pe, "pb": pb, "beta": beta, "peg": peg,
-        "rvol": rvol, "vcp": vcp, "vwap": vwap, "atr_pct": atr_pct
+        "price": close_price,
+        "volume": last_volume,
+        "dollar_volume": dollar_volume,
+        "pe": pe,
+        "pb": pb,
+        "beta": beta,
+        "peg": peg,
+        "eps_g": eps_g,
+        "dividend_yield": dividend_yield,
+        "rvol": rvol,
+        "vcp": vcp,
+        "contraction_ratio": contraction_ratio,
+        "vwap": vwap,
+        "atr_pct": atr_pct,
+        "rsi": rsi,
+        "macd_diff": macd_diff,
+        "adx": adx,
+        "bb_width": bb_width,
+        "ma20": ma20_v,
+        "ma50": ma50_v,
+        "ma200": ma200_v,
+        "ma50_gap_pct": pct_gap(close_price, ma50_v),
+        "ma200_gap_pct": pct_gap(close_price, ma200_v),
+        "trend_score": trend_score,
+        "momentum_score": momentum_score,
+        "risk_score": risk_score,
+        "valuation_score": valuation_score,
+        "technical_score": technical_score,
+        "score_bucket": score_bucket(technical_score),
+        "data_points": len(df),
     }
-    
+
     m["advanced"] = {}
     if advanced_df is not None:
         try:
-            matched_row = advanced_df[advanced_df['股號'] == target_symbol]
+            matched_row = advanced_df[advanced_df["股號"].astype(str) == str(target_symbol)]
             if not matched_row.empty:
                 row_dict = matched_row.iloc[0].to_dict()
-                row_dict.pop('股號', None)
+                row_dict.pop("股號", None)
                 m["advanced"] = {str(k): v for k, v in row_dict.items() if pd.notna(v)}
             else:
                 st.sidebar.warning(f"⚠️ 降規模式：CSV 中找不到標的 {target_symbol}")
         except Exception as e:
             st.sidebar.error(f"❌ CSV 解析失敗: {e}")
-            
+
     return m
 
-# --- 2. 戰術燈號 ---
-def get_traffic_light(m, mode, strategy, r_thresh, v_thresh):
-    if mode == "白馬股 (價值/已驗證)":
-        if strategy == "穩健型 (合理成長)":
-            if m['peg'] < 0.75: return "🟢 綠燈", "低估成長，逢低進場佈局"
-            elif m['peg'] > 1.2: return "🔴 紅燈", "估值過熱，留意獲利了結"
-            else: return "🔵 藍燈", "估值合理，穩定續抱"
+
+def build_investment_audit(
+    m,
+    mode,
+    strategy,
+    min_volume,
+    max_atr,
+    r_thresh,
+    v_thresh,
+    trading_style="波段/投資",
+    daytrade=None,
+    daytrade_direction="做多",
+    daytrade_min_volume=500000,
+    daytrade_min_rvol=1.5,
+    daytrade_max_atr_5m=1.2,
+):
+    items = []
+
+    def add(name, passed, detail, severity="hard"):
+        items.append(
+            {
+                "name": name,
+                "passed": passed,
+                "detail": detail,
+                "severity": severity,
+            }
+        )
+
+    add(
+        "資料完整性",
+        m["data_points"] >= MIN_ANALYSIS_DAYS,
+        f"{m['data_points']} 日資料；投審基準建議至少 {MIN_ANALYSIS_DAYS} 日",
+        "soft",
+    )
+    add(
+        "流動性門檻",
+        m["volume"] >= min_volume,
+        f"成交量 {m['volume'] / 1000:,.0f} 張，門檻 {min_volume / 1000:,.0f} 張",
+        "hard",
+    )
+    add(
+        "波動風險",
+        m["atr_pct"] <= max_atr,
+        f"ATR {m['atr_pct']:.2f}%，上限 {max_atr:.2f}%",
+        "hard",
+    )
+    add(
+        "長線趨勢",
+        m["price"] >= m["ma200"] if m["ma200"] > 0 else False,
+        f"價格相對 MA200：{m['ma200_gap_pct']:.2f}%",
+        "hard" if mode == "黑馬潛力股 (轉機/突破)" else "soft",
+    )
+    add(
+        "中期延伸風險",
+        m["ma50_gap_pct"] <= 20,
+        f"價格相對 MA50：{m['ma50_gap_pct']:.2f}%",
+        "soft",
+    )
+
+    if trading_style == "當沖":
+        if not daytrade or not daytrade.get("available"):
+            add(
+                "當沖資料",
+                False,
+                daytrade.get("reason", "缺少 5 分鐘線資料") if daytrade else "缺少 5 分鐘線資料",
+                "hard",
+            )
         else:
-            if m['pb'] < 1.5: return "🟢 綠燈", "淨值保護，安全進場"
-            else: return "🔵 藍燈", "股價平穩，持續觀察"
-    else: 
-        if m['rvol'] > r_thresh and m['vcp'] < v_thresh: return "🟢 綠燈", "爆量突破，積極跟進動能"
-        else: return "🔵 藍燈", "量縮震盪，等待表態"
+            is_long = daytrade_direction == "做多"
+            bias_score = daytrade["long_bias_score"] if is_long else daytrade["short_bias_score"]
+            vwap_ok = daytrade["price"] > daytrade["intraday_vwap"] if is_long else daytrade["price"] < daytrade["intraday_vwap"]
+            orb_ok = daytrade["price"] > daytrade["orb_high"] if is_long else daytrade["price"] < daytrade["orb_low"]
+            ema_ok = daytrade["ema9"] > daytrade["ema21"] if is_long else daytrade["ema9"] < daytrade["ema21"]
+            rsi_ok = 45 <= daytrade["rsi_5m"] <= 72 if is_long else 28 <= daytrade["rsi_5m"] <= 55
+
+            add(
+                "當沖流動性",
+                daytrade["day_volume"] >= daytrade_min_volume,
+                f"盤中量 {daytrade['day_volume'] / 1000:,.0f} 張，門檻 {daytrade_min_volume / 1000:,.0f} 張",
+                "hard",
+            )
+            add(
+                "5 分鐘量能",
+                daytrade["intraday_rvol"] >= daytrade_min_rvol,
+                f"5 分鐘 RVOL {daytrade['intraday_rvol']:.2f}x，門檻 {daytrade_min_rvol:.2f}x",
+                "hard",
+            )
+            add(
+                "VWAP 方向",
+                vwap_ok,
+                f"價格相對 VWAP：{daytrade['vwap_gap_pct']:.2f}%",
+                "hard",
+            )
+            add(
+                "開盤區間突破",
+                orb_ok,
+                f"ORB 高 {daytrade['orb_high']:.2f} / 低 {daytrade['orb_low']:.2f}",
+                "hard",
+            )
+            add(
+                "EMA 9/21 方向",
+                ema_ok,
+                f"EMA9 {daytrade['ema9']:.2f} / EMA21 {daytrade['ema21']:.2f}",
+                "soft",
+            )
+            add(
+                "5 分鐘 RSI",
+                rsi_ok,
+                f"RSI {daytrade['rsi_5m']:.1f}",
+                "soft",
+            )
+            add(
+                "5 分鐘波動上限",
+                daytrade["atr_5m_pct"] <= daytrade_max_atr_5m,
+                f"5 分鐘 ATR {daytrade['atr_5m_pct']:.2f}%，上限 {daytrade_max_atr_5m:.2f}%",
+                "hard",
+            )
+            add(
+                "當沖方向分數",
+                bias_score >= 70,
+                f"{daytrade_direction} 分數 {bias_score}/100",
+                "hard",
+            )
+    elif strategy == "積極型 (動能/短線)":
+        add(
+            "突破確認",
+            m["rvol"] >= r_thresh and m["vcp"] <= v_thresh and m["macd_diff"] > 0,
+            f"RVOL {m['rvol']:.2f}x / VCP {m['vcp']:.2f}% / MACD diff {m['macd_diff']:.2f}",
+            "hard",
+        )
+    elif strategy == "保守型 (防禦/股息)":
+        add(
+            "估值防線",
+            (0 < m["pb"] <= 1.8) or m["dividend_yield"] >= 3,
+            f"P/B {m['pb']:.2f} / 殖利率 {m['dividend_yield']:.2f}%",
+            "hard",
+        )
+    else:
+        add(
+            "成長估值",
+            m["peg"] <= 1.2,
+            f"PEG {m['peg']:.2f}",
+            "hard",
+        )
+
+    hard_failed = [x for x in items if not x["passed"] and x["severity"] == "hard"]
+    soft_failed = [x for x in items if not x["passed"] and x["severity"] == "soft"]
+    return items, hard_failed, soft_failed
+
+
+# --- 2. 戰術燈號 ---
+def get_traffic_light(
+    m,
+    mode,
+    strategy,
+    r_thresh,
+    v_thresh,
+    min_volume,
+    max_atr,
+    trading_style="波段/投資",
+    daytrade=None,
+    daytrade_direction="做多",
+    daytrade_min_volume=500000,
+    daytrade_min_rvol=1.5,
+    daytrade_max_atr_5m=1.2,
+):
+    audit_items, hard_failed, soft_failed = build_investment_audit(
+        m,
+        mode,
+        strategy,
+        min_volume,
+        max_atr,
+        r_thresh,
+        v_thresh,
+        trading_style,
+        daytrade,
+        daytrade_direction,
+        daytrade_min_volume,
+        daytrade_min_rvol,
+        daytrade_max_atr_5m,
+    )
+
+    if hard_failed:
+        if trading_style == "當沖":
+            return "🔴 紅燈", "未通過當沖硬門檻，禁止追價進場", audit_items
+        return "🔴 紅燈", "未通過投審硬門檻，暫不啟動新倉位", audit_items
+    if trading_style == "當沖":
+        score = daytrade["long_bias_score"] if daytrade_direction == "做多" else daytrade["short_bias_score"]
+        if score >= 85 and not soft_failed:
+            return "🟢 綠燈", "當沖方向、量能與 VWAP 共振，可依紀律小部位執行", audit_items
+        return "🔵 藍燈", "當沖條件可追蹤，需等待下一根 5 分鐘 K 確認", audit_items
+    if m["technical_score"] >= 75 and not soft_failed:
+        return "🟢 綠燈", "投審與技術共振，可進入分批執行清單", audit_items
+    if m["technical_score"] >= 60:
+        return "🔵 藍燈", "條件接近成熟，等待突破或估值修正確認", audit_items
+    return "🟡 黃燈", "訊號不足，僅保留追蹤，不建議追價", audit_items
+
+
+def render_audit_table(audit_items):
+    audit_df = pd.DataFrame(audit_items)
+    audit_df["結果"] = audit_df["passed"].map({True: "PASS", False: "FAIL"})
+    audit_df["類型"] = audit_df["severity"].map({"hard": "硬門檻", "soft": "觀察項"})
+    st.dataframe(
+        audit_df[["結果", "類型", "name", "detail"]].rename(
+            columns={"name": "審核項目", "detail": "判讀"}
+        ),
+        use_container_width=True,
+        hide_index=True,
+    )
+
+
+def build_trade_plan(m, strategy, trading_style="波段/投資", daytrade=None, daytrade_direction="做多"):
+    if trading_style == "當沖" and daytrade and daytrade.get("available"):
+        entry = daytrade["price"]
+        is_long = daytrade_direction == "做多"
+        atr_buffer = max(daytrade["atr_5m"] * 1.2, entry * 0.003)
+        if is_long:
+            stop = min(daytrade["intraday_vwap"], daytrade["orb_low"], entry - atr_buffer)
+            risk = max(entry - stop, 0.01)
+            target_1 = entry + risk * 1.5
+            target_2 = entry + risk * 2.5
+        else:
+            stop = max(daytrade["intraday_vwap"], daytrade["orb_high"], entry + atr_buffer)
+            risk = max(stop - entry, 0.01)
+            target_1 = entry - risk * 1.5
+            target_2 = entry - risk * 2.5
+
+        return {
+            "entry": entry,
+            "stop": stop,
+            "target_1": target_1,
+            "target_2": target_2,
+            "position_hint": "當沖單筆風險 0.25%-0.5%，禁止攤平，收盤前清倉",
+            "rr": abs(target_1 - entry) / risk,
+        }
+
+    entry = m["price"]
+    stop_by_atr = entry * (1 - max(m["atr_pct"] * 1.5, 3.0) / 100)
+    support_stop = m["ma50"] if m["ma50"] > 0 else stop_by_atr
+    stop = min(stop_by_atr, support_stop)
+    risk = max(entry - stop, 0.01)
+    target_1 = entry + risk * 2
+    target_2 = entry + risk * 3
+
+    if strategy == "保守型 (防禦/股息)":
+        position_hint = "單筆風險 0.5% 以內，分 3 批建立"
+    elif strategy == "積極型 (動能/短線)":
+        position_hint = "單筆風險 1.0% 以內，突破確認後分 2 批"
+    else:
+        position_hint = "單筆風險 0.75% 以內，回測支撐分批"
+
+    return {
+        "entry": entry,
+        "stop": stop,
+        "target_1": target_1,
+        "target_2": target_2,
+        "position_hint": position_hint,
+        "rr": (target_1 - entry) / risk,
+    }
+
 
 # --- 3. 頁面初始化 ---
 st.set_page_config(page_title="WallWin Gem 量化系統", layout="wide")
-st.title("🛡️ WallWin Gem 戰略指揮中心 (完全體 100%)")
+st.title("🛡️ WallWin Gem 投審量化指揮中心")
+st.caption("投資審核流程 + 主流技術分析共識模型；輸出為研究輔助，不構成投資建議。")
 
 try:
     genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
-except:
-    st.error("❌ 缺失 API Key"); st.stop()
+except Exception:
+    st.error("❌ 缺失 API Key")
+    st.stop()
 
 # --- 4. 側邊欄：戰略控制台 ---
 st.sidebar.header("⚙️ 戰略控制台")
 stock_target = st.sidebar.text_input("🎯 目標股號", "2206.TW")
+trading_style = st.sidebar.radio("交易週期", ["波段/投資", "當沖"], horizontal=True)
 mode_select = st.sidebar.radio("市場定調", ["白馬股 (價值/已驗證)", "黑馬潛力股 (轉機/突破)"])
 strategy_select = st.sidebar.selectbox("戰略模組", ["穩健型 (合理成長)", "保守型 (防禦/股息)", "積極型 (動能/短線)"])
 
 st.sidebar.markdown("---")
 
-with st.sidebar.expander("🎚️ 戰略參數微調 (點擊展開)", expanded=False):
+with st.sidebar.expander("🎚️ 投審與技術參數", expanded=True):
+    min_volume = st.slider("最低成交量門檻（張）", 50, 2000, 200, 50) * 1000
+    max_atr = st.slider("ATR 風險上限 (%)", 2.0, 12.0, 5.0, 0.5)
     r_thresh = st.slider("RVOL 爆量閾值", 1.0, 5.0, 2.0, 0.1)
-    v_thresh = st.slider("VCP 壓縮限度 (%)", 1.0, 10.0, 5.0, 0.5)
-    
-    # ✅ [藍圖補齊] 滑桿越界防呆 UI 實裝
-    if r_thresh < 1.5: st.warning("⚠️ 防呆：RVOL 閾值過低，易產生假突破訊號。")
-    if v_thresh > 8.0: st.warning("⚠️ 防呆：VCP 容忍度過高，失去波動收斂意義。")
+    v_thresh = st.slider("VCP 壓縮限度 (%)", 1.0, 20.0, 8.0, 0.5)
+
+    if r_thresh < 1.5:
+        st.warning("⚠️ RVOL 閾值過低，易產生假突破訊號。")
+    if v_thresh > 12.0:
+        st.warning("⚠️ VCP 容忍度過高，會弱化波動收斂判讀。")
+
+if trading_style == "當沖":
+    with st.sidebar.expander("⚡ 當沖投審設定", expanded=True):
+        daytrade_direction = st.radio("當沖方向", ["做多", "放空"], horizontal=True)
+        daytrade_min_volume = st.slider("盤中成交量門檻（張）", 100, 5000, 500, 100) * 1000
+        daytrade_min_rvol = st.slider("5 分鐘 RVOL 門檻", 1.0, 5.0, 1.8, 0.1)
+        daytrade_max_atr_5m = st.slider("5 分鐘 ATR 上限 (%)", 0.2, 3.0, 1.2, 0.1)
+        st.caption("當沖模式使用 5 分鐘線、VWAP、EMA9/21、RSI、MACD 與開盤區間突破檢核。")
+else:
+    daytrade_direction = "做多"
+    daytrade_min_volume = 500000
+    daytrade_min_rvol = 1.8
+    daytrade_max_atr_5m = 1.2
 
 st.sidebar.subheader("📁 HITL 進階私房數據")
 uploaded_file = st.sidebar.file_uploader("上傳 .csv 檔案 (解鎖進階分析)", type="csv")
 advanced_data = None
 if uploaded_file:
     advanced_data = pd.read_csv(uploaded_file)
-    st.sidebar.success("✅ 私房數據已掛載，大腦解鎖！")
+    st.sidebar.success("✅ 私房數據已掛載")
 else:
     st.sidebar.warning("⚠️ 降規模式：未掛載 CSV")
 
@@ -115,90 +651,210 @@ if analyze_button:
     with st.spinner(f"擷取 {stock_target} 數據中..."):
         ticker = yf.Ticker(stock_target)
         hist = ticker.history(period="1y")
-        if hist.empty or len(hist) < 20: st.error("❌ 查無資料或標的已下市"); st.stop()
-        
+        if hist.empty or len(hist) < 60:
+            st.error("❌ 查無足夠資料或標的已下市")
+            st.stop()
+
         m = calculate_quant_matrix(ticker, hist, advanced_data, stock_target)
-        
+        daytrade = None
+        if trading_style == "當沖":
+            intraday_hist = ticker.history(period=DAYTRADE_PERIOD, interval=DAYTRADE_INTERVAL)
+            daytrade = calculate_daytrade_matrix(intraday_hist)
+
         if manual_override:
-            m['peg'] = hitl_peg
+            m["peg"] = hitl_peg
+            m = refresh_composite_score(m)
             st.warning(f"🛠️ HITL 介入：已手動將 PEG 覆蓋為 {hitl_peg}")
-            
-        st.info(f"**今日現價：`{m['price']:.2f}`** │ 成交量：`{m['volume']/1000:,.0f}` 張")
-        
-        # ✅ [藍圖補齊] 流動性與高波動防護網 UI 警告實裝
-        if m['volume'] < 200000:
-            st.error("🩸 【流動性枯竭警告】：單日成交量低於 200 張，滑價與人為操縱風險極高！")
-        if m['atr_pct'] > 5.0:
-            st.warning(f"🌪️ 【高波動警告】：真實波動率達 {m['atr_pct']:.2f}%，請留意劇烈洗盤風險。")
-        
+
+        light_color, advice, audit_items = get_traffic_light(
+            m,
+            mode_select,
+            strategy_select,
+            r_thresh,
+            v_thresh,
+            min_volume,
+            max_atr,
+            trading_style,
+            daytrade,
+            daytrade_direction,
+            daytrade_min_volume,
+            daytrade_min_rvol,
+            daytrade_max_atr_5m,
+        )
+        trade_plan = build_trade_plan(m, strategy_select, trading_style, daytrade, daytrade_direction)
+
+        st.info(
+            f"**最新收盤價：`{m['price']:.2f}`** │ "
+            f"最新成交量：`{m['volume'] / 1000:,.0f}` 張 │ "
+            f"技術共識分數：`{m['technical_score']:.1f}` / 100（{m['score_bucket']}）"
+        )
+
+        if m["volume"] < min_volume:
+            st.error("🩸 【流動性警告】：成交量未達投審門檻，滑價與操縱風險偏高。")
+        if m["atr_pct"] > max_atr:
+            st.warning(f"🌪️ 【高波動警告】：ATR {m['atr_pct']:.2f}% 已超過風險上限。")
+
         col1, col2 = st.columns([2, 1])
-        with col1: st.line_chart(hist['Close'].tail(120)) 
+        with col1:
+            st.line_chart(hist[["Close"]].tail(160))
         with col2:
             st.subheader("核心量化指標")
             st.metric("P/E", f"{m['pe']:.2f}")
-            st.metric("PEG", f"{m['peg']:.2f}", delta="手動覆蓋" if manual_override else ("數據缺失" if m['peg'] == 999.0 else None))
+            st.metric("PEG", f"{m['peg']:.2f}", delta="手動覆蓋" if manual_override else ("數據缺失" if m["peg"] == 999.0 else None))
             st.metric("RVOL", f"{m['rvol']:.2f}x")
             st.metric("VCP", f"{m['vcp']:.2f}%")
-            
-            if m['advanced']:
-                st.markdown("---")
-                st.markdown("**💎 成功匯入之機構數據：**")
-                for k, v in m['advanced'].items(): st.write(f"- {k}: **{v}**")
+            st.metric("RSI", f"{m['rsi']:.1f}")
+            st.metric("ADX", f"{m['adx']:.1f}")
 
-            st.markdown("---")
-            light_color, advice = get_traffic_light(m, mode_select, strategy_select, r_thresh, v_thresh)
+        if trading_style == "當沖":
+            tab_audit, tab_tech, tab_daytrade, tab_plan, tab_ai = st.tabs(["投審檢核", "技術面", "當沖", "交易計畫", "AI 報告"])
+        else:
+            tab_audit, tab_tech, tab_plan, tab_ai = st.tabs(["投審檢核", "技術面", "交易計畫", "AI 報告"])
+
+        with tab_audit:
             st.subheader("🚦 戰術判定燈號")
             st.write(f"**{light_color}**：{advice}")
+            render_audit_table(audit_items)
 
-        # --- 6. Gemini 深度解析 ---
-        st.markdown("---")
-        st.subheader("🧠 決策大腦深度解析 (Gemini AI)")
-        
-        data_status = "【完全體：已融合 BOSS 上傳之 CSV 機構數據】" if m['advanced'] else "【降規模式：缺乏高階基本面數據，請提醒 BOSS 上傳】"
-        prompt = f"""
-        你是一位華爾街頂級量化分析師 (DD 模式)。狀態：{data_status}。
-        目標：{stock_target} | 市場定調：{mode_select} | 戰略模組：{strategy_select}
-        燈號：{light_color} - {advice}
-        量化基準數據：股價 {m['price']:.2f}, P/E {m['pe']:.2f}, PEG {m['peg']:.2f}, RVOL {m['rvol']:.2f}, VCP {m['vcp']:.2f}%, VWAP {m['vwap']:.2f}, ATR {m['atr_pct']:.2f}%
-        BOSS CSV 私房數據：{m['advanced']}
-        
-        絕對約束：
-        1. 【語言鐵律】：必須全篇使用「繁體中文 (Traditional Chinese)」，嚴禁簡體字。
-        2. 【格式鐵律】：嚴格依照「1.可行結論、2.核心依據、3.執行步驟、4.風險與替代方案」四段結構。
-        """
-        
-        try:
-            available_models = [md.name for md in genai.list_models() if 'generateContent' in md.supported_generation_methods and 'gemini' in md.name.lower() and 'vision' not in md.name.lower() and 'robotics' not in md.name.lower() and 'tts' not in md.name.lower()]
-            target_models = sorted([md for md in available_models if '1.5' in md or '2.0' in md or '2.5' in md], key=lambda x: (0 if 'flash' in x.lower() else 1))[:3]
-            
-            success = False
-            error_logs = []
-            
-            for model_name in target_models:
-                try:
-                    model = genai.GenerativeModel(model_name)
-                    response = model.generate_content(prompt, stream=True)
-                    res_box = st.empty()
-                    full_report = ""
-                    
-                    for chunk in response:
-                        if chunk.parts: 
-                            full_report += chunk.text
-                            res_box.markdown(full_report + "▌")
-                            
-                    res_box.markdown(full_report)
-                    success = True
-                    st.success(f"✅ 成功透過 **{model_name}** 完成報告。")
-                    break
-                except Exception as e:
-                    error_logs.append(f"⚠️ **{model_name}** 執行異常：`{e}`")
-                    continue
-            
-            if not success: 
-                if len(full_report) > 50:
-                    st.warning("⚠️ 報告結尾遭遇串流中斷，但主要內容已成功保存。")
+            if m["advanced"]:
+                st.markdown("---")
+                st.markdown("**💎 成功匯入之機構數據：**")
+                for k, v in m["advanced"].items():
+                    st.write(f"- {k}: **{v}**")
+
+        with tab_tech:
+            tech_cols = st.columns(4)
+            tech_cols[0].metric("MA20", f"{m['ma20']:.2f}")
+            tech_cols[1].metric("MA50", f"{m['ma50']:.2f}", f"{m['ma50_gap_pct']:.2f}%")
+            tech_cols[2].metric("MA200", f"{m['ma200']:.2f}", f"{m['ma200_gap_pct']:.2f}%")
+            tech_cols[3].metric("BB Width", f"{m['bb_width']:.2f}%")
+            st.write(
+                f"MACD Diff：**{m['macd_diff']:.2f}** │ "
+                f"VWAP：**{m['vwap']:.2f}** │ "
+                f"ATR：**{m['atr_pct']:.2f}%** │ "
+                f"VCP 收斂比：**{m['contraction_ratio']:.2f}**"
+            )
+
+        if trading_style == "當沖":
+            with tab_daytrade:
+                st.subheader("⚡ 當沖投審分析")
+                if not daytrade or not daytrade.get("available"):
+                    st.error(daytrade.get("reason", "查無當沖資料") if daytrade else "查無當沖資料")
                 else:
-                    st.error("❌ 所有 AI 模型均拒絕連線。錯誤明細：")
-                    for err in error_logs: st.info(err)
-                    
-        except Exception as e: st.error(f"❌ 系統連線基礎異常: {e}")
+                    day_cols = st.columns(4)
+                    day_cols[0].metric("盤中價", f"{daytrade['price']:.2f}", f"{daytrade['vwap_gap_pct']:.2f}% vs VWAP")
+                    day_cols[1].metric("5m RVOL", f"{daytrade['intraday_rvol']:.2f}x")
+                    day_cols[2].metric("5m RSI", f"{daytrade['rsi_5m']:.1f}")
+                    day_cols[3].metric("5m ATR", f"{daytrade['atr_5m_pct']:.2f}%")
+
+                    st.write(
+                        f"方向：**{daytrade_direction}** │ "
+                        f"VWAP：**{daytrade['intraday_vwap']:.2f}** │ "
+                        f"EMA9/21：**{daytrade['ema9']:.2f} / {daytrade['ema21']:.2f}** │ "
+                        f"MACD Diff：**{daytrade['macd_diff_5m']:.2f}**"
+                    )
+                    st.write(
+                        f"開盤區間高低：**{daytrade['orb_high']:.2f} / {daytrade['orb_low']:.2f}** │ "
+                        f"當日高低：**{daytrade['day_high']:.2f} / {daytrade['day_low']:.2f}** │ "
+                        f"盤中量：**{daytrade['day_volume'] / 1000:,.0f} 張**"
+                    )
+                    st.progress(
+                        min(
+                            (daytrade["long_bias_score"] if daytrade_direction == "做多" else daytrade["short_bias_score"]) / 100,
+                            1.0,
+                        ),
+                        text=f"{daytrade_direction} 當沖方向分數",
+                    )
+
+        with tab_plan:
+            st.subheader("📌 執行框架")
+            plan_cols = st.columns(4)
+            plan_cols[0].metric("觀察/進場價", f"{trade_plan['entry']:.2f}")
+            plan_cols[1].metric("風控停損", f"{trade_plan['stop']:.2f}")
+            plan_cols[2].metric("目標一", f"{trade_plan['target_1']:.2f}")
+            plan_cols[3].metric("目標二", f"{trade_plan['target_2']:.2f}")
+            st.write(f"部位建議：**{trade_plan['position_hint']}**")
+            st.write(f"第一目標風報比：約 **{trade_plan['rr']:.1f}R**")
+
+        with tab_ai:
+            st.subheader("🧠 決策大腦深度解析 (Gemini AI)")
+
+            data_status = "【完全體：已融合 BOSS 上傳之 CSV 機構數據】" if m["advanced"] else "【降規模式：缺乏高階基本面數據，請提醒 BOSS 上傳】"
+            prompt = f"""
+            你是一位華爾街投資委員會研究員與技術分析師。狀態：{data_status}。
+            請用繁體中文輸出投研審核報告，且不要承諾報酬。
+
+            目標：{stock_target}
+            交易週期：{trading_style}
+            當沖方向：{daytrade_direction if trading_style == '當沖' else '不適用'}
+            市場定調：{mode_select}
+            戰略模組：{strategy_select}
+            燈號：{light_color} - {advice}
+            投審檢核：{audit_items}
+            當沖 5 分鐘線數據：{daytrade if trading_style == '當沖' else '不適用'}
+            核心量化數據：
+            股價 {m['price']:.2f}, P/E {m['pe']:.2f}, PEG {m['peg']:.2f}, P/B {m['pb']:.2f},
+            EPS 成長 {m['eps_g']:.2f}%, 殖利率 {m['dividend_yield']:.2f}%,
+            RVOL {m['rvol']:.2f}, VCP {m['vcp']:.2f}%, VWAP {m['vwap']:.2f},
+            RSI {m['rsi']:.2f}, ADX {m['adx']:.2f}, MACD diff {m['macd_diff']:.2f},
+            MA50 gap {m['ma50_gap_pct']:.2f}%, MA200 gap {m['ma200_gap_pct']:.2f}%,
+            ATR {m['atr_pct']:.2f}%, 技術共識分數 {m['technical_score']:.1f}/100。
+            執行框架：{trade_plan}
+            BOSS CSV 私房數據：{m['advanced']}
+
+            絕對約束：
+            1. 必須全篇使用繁體中文，嚴禁簡體字。
+            2. 嚴格依照「1.投審結論、2.關鍵依據、3.技術面判讀、4.執行計畫、5.風險與否決條件」五段結構。
+            3. 若任一硬門檻未通過，必須明確寫出「暫不啟動新倉位」。
+            4. 若交易週期為當沖，必須明確寫出「收盤前清倉、禁止攤平、嚴守停損」。
+            """
+
+            try:
+                available_models = [
+                    md.name
+                    for md in genai.list_models()
+                    if "generateContent" in md.supported_generation_methods
+                    and "gemini" in md.name.lower()
+                    and "vision" not in md.name.lower()
+                    and "robotics" not in md.name.lower()
+                    and "tts" not in md.name.lower()
+                ]
+                target_models = sorted(
+                    [md for md in available_models if "1.5" in md or "2.0" in md or "2.5" in md],
+                    key=lambda x: (0 if "flash" in x.lower() else 1),
+                )[:3]
+
+                success = False
+                error_logs = []
+                full_report = ""
+
+                for model_name in target_models:
+                    try:
+                        model = genai.GenerativeModel(model_name)
+                        response = model.generate_content(prompt, stream=True)
+                        res_box = st.empty()
+                        full_report = ""
+
+                        for chunk in response:
+                            if chunk.parts:
+                                full_report += chunk.text
+                                res_box.markdown(full_report + "▌")
+
+                        res_box.markdown(full_report)
+                        success = True
+                        st.success(f"✅ 成功透過 **{model_name}** 完成報告。")
+                        break
+                    except Exception as e:
+                        error_logs.append(f"⚠️ **{model_name}** 執行異常：`{e}`")
+                        continue
+
+                if not success:
+                    if len(full_report) > 50:
+                        st.warning("⚠️ 報告結尾遭遇串流中斷，但主要內容已成功保存。")
+                    else:
+                        st.error("❌ 所有 AI 模型均拒絕連線。錯誤明細：")
+                        for err in error_logs:
+                            st.info(err)
+
+            except Exception as e:
+                st.error(f"❌ 系統連線基礎異常: {e}")
