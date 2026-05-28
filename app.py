@@ -590,6 +590,97 @@ def run_signal_backtest(hist, params):
     return trades_df, {"交易次數": len(trades_df), "勝率%": round(len(wins) / len(trades_df) * 100, 1), "平均淨報酬%": round(returns.mean(), 2), "中位數淨報酬%": round(returns.median(), 2), "最佳單筆%": round(returns.max(), 2), "最差單筆%": round(returns.min(), 2), "平均最大回撤%": round(trades_df["期間最大回撤%"].mean(), 2), "獲利因子": round(wins.sum() / total_loss, 2) if total_loss > 0 else 0, "平均持有日": round(trades_df["持有日"].mean(), 1)}
 
 
+def run_weighted_signal_backtest(hist, params, profile):
+    adjusted = dict(params)
+    if profile == "品質價值強化":
+        adjusted["rvol"] = max(params["rvol"] - 0.2, 1.0)
+        adjusted["max_atr"] = max(params["max_atr"] - 0.7, 1.0)
+        adjusted["stop"] = max(params["stop"] - 1.0, 1.0)
+    elif profile == "動能突破強化":
+        adjusted["rvol"] = params["rvol"] + 0.4
+        adjusted["target"] = params["target"] + 4.0
+        adjusted["trailing"] = max(params["trailing"] - 1.0, 2.0)
+    elif profile == "風控防守強化":
+        adjusted["max_atr"] = max(params["max_atr"] - 1.0, 1.0)
+        adjusted["stop"] = max(params["stop"] - 2.0, 1.0)
+        adjusted["target"] = max(params["target"] - 2.0, 2.0)
+    return run_signal_backtest(hist, adjusted)
+
+
+def stats_score(stats):
+    if not stats or "交易次數" not in stats or stats["交易次數"] == 0:
+        return -999
+    return (
+        stats.get("平均淨報酬%", 0) * 2
+        + stats.get("勝率%", 0) * 0.08
+        + stats.get("獲利因子", 0) * 2
+        + stats.get("最佳單筆%", 0) * 0.2
+        + stats.get("最差單筆%", 0) * 0.5
+        + stats.get("平均最大回撤%", 0) * 0.3
+    )
+
+
+def run_walk_forward_calibration(hist, base_params, train_days=252, test_days=63):
+    df = hist.copy().dropna(subset=["Open", "High", "Low", "Close", "Volume"])
+    profiles = ["原始權重", "品質價值強化", "動能突破強化", "風控防守強化"]
+    test_days = max(test_days, 126)
+    min_needed = train_days + test_days + 80
+    if len(df) < min_needed:
+        return pd.DataFrame(), pd.DataFrame(), {"狀態": f"資料不足，至少需要約 {min_needed} 個交易日"}
+
+    rows = []
+    test_trades = []
+    start = 0
+    segment = 1
+    while start + train_days + test_days <= len(df):
+        train = df.iloc[start : start + train_days]
+        test = df.iloc[start + train_days : start + train_days + test_days]
+        train_scores = []
+        for profile in profiles:
+            _, train_stats = run_weighted_signal_backtest(train, base_params, profile)
+            train_scores.append((profile, stats_score(train_stats), train_stats))
+        best_profile, train_score, train_stats = sorted(train_scores, key=lambda item: item[1], reverse=True)[0]
+        test_df, test_stats = run_weighted_signal_backtest(test, base_params, best_profile)
+        if not test_df.empty:
+            test_df = test_df.copy()
+            test_df["段次"] = segment
+            test_df["採用輪廓"] = best_profile
+            test_trades.append(test_df)
+        rows.append(
+            {
+                "段次": segment,
+                "訓練起": train.index[0].date(),
+                "訓練迄": train.index[-1].date(),
+                "測試起": test.index[0].date(),
+                "測試迄": test.index[-1].date(),
+                "訓練最佳輪廓": best_profile,
+                "訓練分數": round(train_score, 2),
+                "訓練交易數": train_stats.get("交易次數", 0),
+                "測試交易數": test_stats.get("交易次數", 0),
+                "測試勝率%": test_stats.get("勝率%", 0),
+                "測試平均淨報酬%": test_stats.get("平均淨報酬%", 0),
+                "測試獲利因子": test_stats.get("獲利因子", 0),
+                "測試最差單筆%": test_stats.get("最差單筆%", 0),
+            }
+        )
+        start += test_days
+        segment += 1
+
+    walk_df = pd.DataFrame(rows)
+    all_trades = pd.concat(test_trades, ignore_index=True) if test_trades else pd.DataFrame()
+    if walk_df.empty:
+        return walk_df, all_trades, {"狀態": "沒有可顯示的 walk-forward 結果"}
+    summary = {
+        "段數": len(walk_df),
+        "測試總交易數": int(walk_df["測試交易數"].sum()),
+        "平均測試勝率%": round(walk_df["測試勝率%"].mean(), 1),
+        "平均測試淨報酬%": round(walk_df["測試平均淨報酬%"].mean(), 2),
+        "平均測試獲利因子": round(walk_df["測試獲利因子"].mean(), 2),
+        "最差測試單筆%": round(walk_df["測試最差單筆%"].min(), 2),
+    }
+    return walk_df, all_trades, summary
+
+
 def hitl_recommendations(style, mode):
     base = ["股號", "產業", "同業排名", "財報備註"]
     if mode == "白馬模式":
@@ -892,7 +983,46 @@ if analyze_button:
             f"目前資料下最佳輪廓：{best_profile['權重輪廓']}，"
             f"重新加權分數 {best_profile['重新加權分數']:.1f}（{best_profile['分級']}）。"
         )
-        st.caption("此校準為目前標的的因子輪廓比較，下一步可再加入多年度 walk-forward 回測做嚴格參數校準。")
+        st.caption("輪廓比較用於解讀目前標的的因子偏好；下方 walk-forward 會用多年度歷史價格分段驗證。")
+
+        st.markdown("---")
+        st.subheader("Walk-forward 多年度回測校準")
+        st.caption("0 成本版本使用 yfinance 歷史價格；每段先用訓練期挑最佳輪廓，再到下一段測試期驗證。")
+        with st.expander("進階設定", expanded=False):
+            wf_period = st.selectbox("歷史資料期間", ["5y", "10y", "max"], index=0)
+            train_days = st.slider("訓練窗（交易日）", 126, 504, 252, 21)
+            test_days = st.slider("測試窗（交易日）", 126, 252, 126, 21)
+        if st.button("執行 walk-forward 校準", type="primary"):
+            with st.spinner("正在執行 walk-forward 多年度校準..."):
+                wf_hist = load_history(symbol, period=wf_period)
+                if wf_hist.empty:
+                    st.error("無法取得多年度歷史資料。")
+                else:
+                    wf_df, wf_trades, wf_summary = run_walk_forward_calibration(wf_hist, bt_params, train_days, test_days)
+                    if wf_df.empty:
+                        st.warning(wf_summary.get("狀態", "沒有可顯示的 walk-forward 結果"))
+                    else:
+                        wf_cols = st.columns(5)
+                        wf_cols[0].metric("驗證段數", wf_summary["段數"])
+                        wf_cols[1].metric("測試交易數", wf_summary["測試總交易數"])
+                        wf_cols[2].metric("平均勝率", f"{wf_summary['平均測試勝率%']:.1f}%")
+                        wf_cols[3].metric("平均淨報酬", f"{wf_summary['平均測試淨報酬%']:.2f}%")
+                        wf_cols[4].metric("平均獲利因子", f"{wf_summary['平均測試獲利因子']:.2f}")
+                        st.dataframe(wf_df, use_container_width=True, hide_index=True)
+                        st.download_button(
+                            "下載 walk-forward 分段結果 CSV",
+                            wf_df.to_csv(index=False).encode("utf-8-sig"),
+                            f"{symbol}_walk_forward_segments.csv",
+                            "text/csv",
+                        )
+                        if not wf_trades.empty:
+                            st.dataframe(wf_trades.tail(50), use_container_width=True, hide_index=True)
+                            st.download_button(
+                                "下載 walk-forward 交易明細 CSV",
+                                wf_trades.to_csv(index=False).encode("utf-8-sig"),
+                                f"{symbol}_walk_forward_trades.csv",
+                                "text/csv",
+                            )
     with tab_plan:
         plan_cols = st.columns(4)
         plan_cols[0].metric("進場/觀察", f"{trade_plan['entry']:.2f}")
