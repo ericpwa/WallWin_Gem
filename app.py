@@ -7,6 +7,13 @@ import ta
 from google import genai
 
 try:
+    import plotly.graph_objects as go
+    from plotly.subplots import make_subplots
+except Exception:
+    go = None
+    make_subplots = None
+
+try:
     from reportlab.lib.pagesizes import A4
     from reportlab.lib.styles import getSampleStyleSheet
     from reportlab.pdfbase import pdfmetrics
@@ -458,6 +465,13 @@ def safe_float(val, default=0.0):
         return default
 
 
+def normalize_symbol(raw_symbol):
+    symbol_text = str(raw_symbol or "").strip().upper()
+    if symbol_text.isdigit():
+        return f"{symbol_text}.TW"
+    return symbol_text
+
+
 def clamp(value, low=0.0, high=100.0):
     return max(low, min(high, value))
 
@@ -476,6 +490,53 @@ def pct_change(current, previous):
     if previous and previous > 0:
         return (current - previous) / previous * 100
     return 0.0
+
+
+def fmt_num(value, digits=2, suffix=""):
+    value = safe_float(value, None)
+    if value is None:
+        return "N/A"
+    return f"{value:,.{digits}f}{suffix}"
+
+
+def fmt_big_number(value):
+    value = safe_float(value, None)
+    if value is None:
+        return "N/A"
+    abs_value = abs(value)
+    if abs_value >= 100_000_000_000:
+        return f"{value / 100_000_000_000:.2f} 千億"
+    if abs_value >= 100_000_000:
+        return f"{value / 100_000_000:.2f} 億"
+    if abs_value >= 10_000:
+        return f"{value / 10_000:.2f} 萬"
+    return f"{value:,.0f}"
+
+
+def pct_label(value):
+    value = safe_float(value, None)
+    if value is None:
+        return "N/A"
+    return f"{value:+.2f}%"
+
+
+def interpret_score(score):
+    if score >= 80:
+        return "強勢優勢"
+    if score >= 65:
+        return "條件成熟"
+    if score >= 50:
+        return "中性觀察"
+    return "偏弱待確認"
+
+
+def interpret_relative(value, unit="分"):
+    value = safe_float(value)
+    if value > 8:
+        return f"高於基準 {value:.1f}{unit}"
+    if value < -8:
+        return f"低於基準 {abs(value):.1f}{unit}"
+    return f"接近基準 {value:+.1f}{unit}"
 
 
 def get_secret_value(name, default=""):
@@ -537,7 +598,13 @@ def get_advanced_row(advanced_df, symbol):
         rows = advanced_df[advanced_df["股號"].astype(str).str.upper().str.replace(".TW", "", regex=False).str.replace(".TWO", "", regex=False) == normalized]
         if rows.empty:
             return {}
-        return {str(k): v for k, v in rows.iloc[0].to_dict().items() if pd.notna(v)}
+        for date_col in ["月份", "日期", "month", "date"]:
+            if date_col in rows.columns:
+                rows = rows.copy()
+                rows["_sort_date"] = pd.to_datetime(rows[date_col], errors="coerce")
+                rows = rows.sort_values("_sort_date")
+                break
+        return {str(k): v for k, v in rows.iloc[-1].to_dict().items() if pd.notna(v)}
     except Exception:
         return {}
 
@@ -1080,7 +1147,7 @@ def run_walk_forward_calibration(hist, base_params, train_days=252, test_days=63
 def hitl_recommendations(style, mode):
     base = ["股號", "產業", "同業排名", "財報備註"]
     if mode == "白馬模式":
-        base += ["ROE", "ROA", "ROIC", "毛利率", "營益率", "淨利率", "負債權益比", "流動比率", "利息保障倍數", "自由現金流", "FCF殖利率", "PE分位", "PB分位", "配息率"]
+        base += ["月份", "營收", "EPS", "淨利", "ROE", "ROA", "ROIC", "毛利率", "營益率", "淨利率", "負債權益比", "流動比率", "利息保障倍數", "自由現金流", "FCF殖利率", "PE分位", "PB分位", "配息率"]
     else:
         base += ["營收YoY", "EPSYoY", "分析師上修", "法人買超", "主力籌碼", "產業強度", "突破型態備註", "事件催化"]
     if style == "當沖":
@@ -1092,8 +1159,10 @@ def build_hitl_template(style, mode):
     columns = hitl_recommendations(style, mode)
     sample = {column: "" for column in columns}
     sample["股號"] = "2330.TW"
+    if "月份" in sample:
+        sample["月份"] = "2026-05"
     if "ROE" in sample:
-        sample.update({"ROE": 25, "ROA": 12, "ROIC": 18, "毛利率": 55, "營益率": 42, "淨利率": 38})
+        sample.update({"營收": 200000000000, "EPS": 10.5, "淨利": 85000000000, "ROE": 25, "ROA": 12, "ROIC": 18, "毛利率": 55, "營益率": 42, "淨利率": 38})
     if "營收YoY" in sample:
         sample.update({"營收YoY": 20, "EPSYoY": 25, "分析師上修": 10, "事件催化": "新產品/產業題材"})
     return pd.DataFrame([sample])
@@ -1152,6 +1221,362 @@ def calibrate_weight_profiles(engine):
             }
         )
     return pd.DataFrame(rows).sort_values("重新加權分數", ascending=False)
+
+
+FACTOR_LABELS = {
+    "value": "估值 Value",
+    "growth": "成長 Growth",
+    "quality": "品質 Quality",
+    "momentum": "動能 Momentum",
+    "low_vol": "低波動 Low Vol",
+    "liquidity": "流動性 Liquidity",
+    "risk": "風控 Risk",
+    "dividend_safety": "股利安全 Dividend",
+}
+
+
+def build_stock_dashboard_rows(symbol, info, hist, engine, light, advice, trade_plan):
+    df = hist.copy().dropna(subset=["Open", "High", "Low", "Close", "Volume"])
+    latest = df.iloc[-1]
+    previous = df.iloc[-2] if len(df) >= 2 else latest
+    close = safe_float(latest["Close"])
+    prev_close = safe_float(previous["Close"])
+    change = close - prev_close
+    change_pct = pct_change(close, prev_close)
+    amount = safe_float(latest["Close"]) * safe_float(latest["Volume"])
+    amplitude = (safe_float(latest["High"]) - safe_float(latest["Low"])) / prev_close * 100 if prev_close else 0
+    avg_vol_5 = safe_float(df["Volume"].tail(5).mean())
+    avg_vol_20 = safe_float(df["Volume"].tail(20).mean())
+    year_high = safe_float(df["High"].tail(252).max())
+    year_low = safe_float(df["Low"].tail(252).min())
+    m = engine["metrics"]
+    board = {
+        "識別": {
+            "股票代號": symbol,
+            "股票名稱": info.get("longName") or info.get("shortName") or symbol,
+            "市場": info.get("exchange") or ("TWSE/TPEX" if symbol.endswith((".TW", ".TWO")) else "US/Other"),
+            "產業別": info.get("industry") or "N/A",
+            "幣別": info.get("currency") or "N/A",
+            "資料更新時間": str(df.index[-1]),
+        },
+        "前一交易日行情": {
+            "昨收": fmt_num(prev_close),
+            "開盤": fmt_num(latest["Open"]),
+            "最高": fmt_num(latest["High"]),
+            "最低": fmt_num(latest["Low"]),
+            "收盤": fmt_num(close),
+            "漲跌": f"{change:+.2f}",
+            "漲跌幅": pct_label(change_pct),
+            "成交量": fmt_big_number(latest["Volume"]),
+            "成交金額": fmt_big_number(amount),
+            "振幅": pct_label(amplitude),
+            "5日均量": fmt_big_number(avg_vol_5),
+            "20日均量": fmt_big_number(avg_vol_20),
+            "RVOL": f"{m['rvol']:.2f}x",
+        },
+        "最近價格摘要": {
+            "最新價": fmt_num(close),
+            "今日漲跌幅": pct_label(change_pct),
+            "今日成交量": fmt_big_number(latest["Volume"]),
+            "價格 vs MA20": pct_label(pct_change(close, m["ma20"])),
+            "價格 vs MA50": pct_label(pct_change(close, m["ma50"])),
+            "價格 vs MA200": pct_label(pct_change(close, m["ma200"])),
+            "是否站上 VWAP": "是" if close >= m["vwap"] else "否",
+            "52週高點距離": pct_label(pct_change(close, year_high)),
+            "52週低點距離": pct_label(pct_change(close, year_low)),
+        },
+        "WallWin 判讀摘要": {
+            "燈號": light,
+            "判定": advice,
+            "勝率分數": f"{engine['win_score']:.1f} / 100（{engine['bucket']}）",
+            "白馬分": f"{engine['white_score']:.1f}",
+            "黑馬分": f"{engine['black_score']:.1f}",
+            "主要加分因子": "、".join(sorted(engine["factor_scores"], key=engine["factor_scores"].get, reverse=True)[:3]),
+            "主要扣分因子": "、".join(sorted(engine["factor_scores"], key=engine["factor_scores"].get)[:3]),
+            "否決條件": "、".join(engine["hard_flags"]) if engine["hard_flags"] else "無",
+            "建議交易週期": engine["style"],
+            "建議模式": engine["mode"],
+            "交易計畫摘要": f"進場 {trade_plan['entry']:.2f} / 停損 {trade_plan['stop']:.2f} / 目標一 {trade_plan['target_1']:.2f}",
+        },
+    }
+    return board
+
+
+def render_key_value_board(title, values, columns=4):
+    st.markdown(f"### {title}")
+    items = list(values.items())
+    for start in range(0, len(items), columns):
+        cols = st.columns(columns)
+        for col, (label, value) in zip(cols, items[start : start + columns]):
+            col.metric(label, value)
+
+
+def render_stock_dashboard(symbol, info, hist, engine, light, advice, trade_plan):
+    st.subheader("個股資訊看板")
+    st.caption("第一屏聚焦個股識別、前一交易日行情、最近價格摘要與 WallWin 判讀；基本面與技術面細節放在下方展開。")
+    board = build_stock_dashboard_rows(symbol, info, hist, engine, light, advice, trade_plan)
+    render_key_value_board("A. 個股識別", board["識別"], columns=3)
+    render_key_value_board("B. 前一交易日行情", board["前一交易日行情"], columns=4)
+    render_key_value_board("C. 即時/最近價格摘要", board["最近價格摘要"], columns=3)
+    render_key_value_board("F. WallWin 判讀摘要", board["WallWin 判讀摘要"], columns=3)
+
+    with st.expander("D. 基本面摘要", expanded=False):
+        m = engine["metrics"]
+        st.dataframe(
+            pd.DataFrame(
+                [
+                    {"類別": "估值", "指標": "P/E", "數值": fmt_num(m["pe"])},
+                    {"類別": "估值", "指標": "P/B", "數值": fmt_num(m["pb"])},
+                    {"類別": "估值", "指標": "P/S", "數值": fmt_num(m["ps"])},
+                    {"類別": "估值", "指標": "EV/EBITDA", "數值": fmt_num(m["ev_ebitda"])},
+                    {"類別": "品質", "指標": "ROE", "數值": fmt_num(m["roe"], suffix="%")},
+                    {"類別": "品質", "指標": "ROA", "數值": fmt_num(m["roa"], suffix="%")},
+                    {"類別": "品質", "指標": "ROIC", "數值": fmt_num(m["roic"], suffix="%")},
+                    {"類別": "股利", "指標": "殖利率", "數值": fmt_num(m["dividend_yield"], suffix="%")},
+                    {"類別": "現金流", "指標": "FCF Yield", "數值": fmt_num(m["fcf_yield"], suffix="%")},
+                ]
+            ),
+            use_container_width=True,
+            hide_index=True,
+        )
+    with st.expander("E. 技術面摘要", expanded=False):
+        m = engine["metrics"]
+        st.dataframe(
+            pd.DataFrame(
+                [
+                    {"指標": "RSI", "數值": fmt_num(m["rsi"], 1), "判讀": "45-72 通常較健康，過熱需小心追價"},
+                    {"指標": "MACD Diff", "數值": fmt_num(m["macd_diff"], 2), "判讀": "大於 0 偏多，低於 0 偏弱"},
+                    {"指標": "ADX", "數值": fmt_num(m["adx"], 1), "判讀": "越高代表趨勢越明確"},
+                    {"指標": "ATR%", "數值": fmt_num(m["atr_pct"], 2, "%"), "判讀": "越高代表日常波動越大"},
+                    {"指標": "VCP", "數值": fmt_num(m["vcp"], 2, "%"), "判讀": "越低代表波動越收縮"},
+                    {"指標": "布林寬度分位", "數值": fmt_num(m["bb_width_rank"], 1), "判讀": "低分位後放量，較容易出現波動擴張"},
+                ]
+            ),
+            use_container_width=True,
+            hide_index=True,
+        )
+
+
+def build_factor_matrix(engine):
+    weights = WEIGHTS[engine["mode"]][engine["style"]]
+    active_weight_avg = sum(weights.values()) / max(len(weights), 1)
+    rows = []
+    for key, score in engine["factor_scores"].items():
+        weight = weights.get(key, 0)
+        relative_score = score - 50
+        relative_weight = weight - active_weight_avg
+        rows.append(
+            {
+                "因子": FACTOR_LABELS.get(key, key),
+                "分數": round(score, 1),
+                "分數意義": interpret_score(score),
+                "相對分數": round(relative_score, 1),
+                "相對分數判讀": interpret_relative(relative_score),
+                "權重": round(weight, 3),
+                "相對權重": round(relative_weight, 3),
+                "相對權重判讀": interpret_relative(relative_weight * 100, "%"),
+                "加權貢獻": round(score * weight, 2),
+            }
+        )
+    return pd.DataFrame(rows).sort_values("加權貢獻", ascending=False)
+
+
+def render_factor_matrix(engine):
+    st.subheader("多因子矩陣")
+    st.caption("相對分數以 50 分為中性基準；相對權重代表此模式下該因子是否被特別重視。")
+    factor_df = build_factor_matrix(engine)
+    st.dataframe(factor_df, use_container_width=True, hide_index=True)
+    chart_df = factor_df.set_index("因子")[["分數", "加權貢獻"]]
+    st.bar_chart(chart_df)
+    st.info(
+        "閱讀方式：分數高代表該因子條件好；權重高代表目前模式更重視該因子；"
+        "加權貢獻高才是最後真正推動總分的力量。"
+    )
+
+
+def build_fundamental_trend_from_hitl(advanced_df, symbol):
+    if advanced_df is None or advanced_df.empty:
+        return pd.DataFrame()
+    normalized = normalize_symbol_for_advanced(symbol)
+    df = advanced_df.copy()
+    cols = {str(col).strip(): col for col in df.columns}
+    symbol_col = cols.get("股號") or cols.get("symbol") or cols.get("Symbol")
+    date_col = cols.get("月份") or cols.get("日期") or cols.get("month") or cols.get("date")
+    if symbol_col is None or date_col is None:
+        return pd.DataFrame()
+    df = df[df[symbol_col].astype(str).str.upper().str.replace(".TW", "", regex=False).str.replace(".TWO", "", regex=False) == normalized]
+    if df.empty:
+        return pd.DataFrame()
+    df = df.copy()
+    df["月份"] = pd.to_datetime(df[date_col], errors="coerce").dt.to_period("M").dt.to_timestamp()
+    df = df.dropna(subset=["月份"]).sort_values("月份")
+    value_columns = []
+    for name in ["營收", "EPS", "淨利", "毛利率", "營益率", "淨利率", "ROE", "ROA", "ROIC", "自由現金流", "FCF"]:
+        if name in df.columns:
+            value_columns.append(name)
+    rows = []
+    for col in value_columns:
+        series = pd.to_numeric(df[col], errors="coerce")
+        for idx, value in series.items():
+            month = df.loc[idx, "月份"]
+            prev_month = series.shift(1).loc[idx]
+            prev_year = series.shift(12).loc[idx]
+            rows.append(
+                {
+                    "月份": month.strftime("%Y-%m"),
+                    "指標": col,
+                    "數值": round(safe_float(value), 2),
+                    "MoM%": round(pct_change(safe_float(value), safe_float(prev_month)), 2) if pd.notna(prev_month) else None,
+                    "YoY%": round(pct_change(safe_float(value), safe_float(prev_year)), 2) if pd.notna(prev_year) else None,
+                    "增減率判讀": "改善" if pd.notna(prev_month) and safe_float(value) >= safe_float(prev_month) else "轉弱/待觀察",
+                }
+            )
+    return pd.DataFrame(rows)
+
+
+def render_fundamental_trend(advanced_data, symbol, engine):
+    st.subheader("白馬基本面月度矩陣")
+    st.caption("0 成本資料源通常缺少台股月營收與完整月度財務；若上傳 HITL 月資料，系統會自動計算 MoM、YoY 與增減率。")
+    period_years = st.slider("比較年限", 3, 5, 3, key="fundamental_years")
+    trend_df = build_fundamental_trend_from_hitl(advanced_data, symbol)
+    if trend_df.empty:
+        m = engine["metrics"]
+        st.info("尚未偵測到月度 HITL 基本面資料。請上傳含「股號、月份、營收、EPS、淨利、毛利率、營益率、淨利率、ROE、ROIC」的 CSV。")
+        st.dataframe(
+            pd.DataFrame(
+                [
+                    {"指標": "營收 YoY", "目前值": fmt_num(m["revenue_growth"], suffix="%"), "資料狀態": "yfinance/上傳資料可用時顯示"},
+                    {"指標": "EPS YoY", "目前值": fmt_num(m["earnings_growth"], suffix="%"), "資料狀態": "yfinance/上傳資料可用時顯示"},
+                    {"指標": "ROE", "目前值": fmt_num(m["roe"], suffix="%"), "資料狀態": "目前快照"},
+                    {"指標": "毛利率", "目前值": fmt_num(m["gross_margin"], suffix="%"), "資料狀態": "目前快照"},
+                    {"指標": "FCF Yield", "目前值": fmt_num(m["fcf_yield"], suffix="%"), "資料狀態": "目前快照"},
+                ]
+            ),
+            use_container_width=True,
+            hide_index=True,
+        )
+        return
+    cutoff = (pd.Timestamp.today() - pd.DateOffset(years=period_years)).strftime("%Y-%m")
+    trend_df = trend_df[trend_df["月份"] >= cutoff]
+    st.dataframe(trend_df, use_container_width=True, hide_index=True)
+    chart_source = trend_df.pivot_table(index="月份", columns="指標", values="數值", aggfunc="last")
+    st.line_chart(chart_source)
+
+
+def render_technical_charts(hist, symbol):
+    st.subheader("黑馬技術線圖")
+    years = st.slider("技術圖比較年限", 2, 5, 2, key="technical_years")
+    chart_df = hist.copy().dropna(subset=["Open", "High", "Low", "Close", "Volume"]).tail(252 * years)
+    if chart_df.empty:
+        st.warning("沒有足夠價格資料可繪製技術圖。")
+        return
+    chart_df = chart_df.copy()
+    chart_df["MA20"] = chart_df["Close"].rolling(20).mean()
+    chart_df["MA50"] = chart_df["Close"].rolling(50).mean()
+    chart_df["MA200"] = chart_df["Close"].rolling(200).mean()
+    chart_df["RSI"] = ta.momentum.RSIIndicator(close=chart_df["Close"]).rsi()
+    chart_df["MACD"] = ta.trend.MACD(close=chart_df["Close"]).macd_diff()
+    chart_df["RVOL"] = chart_df["Volume"] / chart_df["Volume"].rolling(20).mean()
+    if go is None or make_subplots is None:
+        st.line_chart(chart_df[["Close", "MA20", "MA50", "MA200"]])
+        st.bar_chart(chart_df[["Volume"]])
+        return
+    fig = make_subplots(
+        rows=4,
+        cols=1,
+        shared_xaxes=True,
+        vertical_spacing=0.03,
+        row_heights=[0.50, 0.18, 0.16, 0.16],
+        subplot_titles=("K線 + MA20/MA50/MA200", "成交量", "RSI", "MACD Diff"),
+    )
+    fig.add_trace(go.Candlestick(x=chart_df.index, open=chart_df["Open"], high=chart_df["High"], low=chart_df["Low"], close=chart_df["Close"], name="K線"), row=1, col=1)
+    for ma_name in ["MA20", "MA50", "MA200"]:
+        fig.add_trace(go.Scatter(x=chart_df.index, y=chart_df[ma_name], mode="lines", name=ma_name), row=1, col=1)
+    fig.add_trace(go.Bar(x=chart_df.index, y=chart_df["Volume"], name="成交量"), row=2, col=1)
+    fig.add_trace(go.Scatter(x=chart_df.index, y=chart_df["RSI"], mode="lines", name="RSI"), row=3, col=1)
+    fig.add_hline(y=70, line_dash="dash", row=3, col=1)
+    fig.add_hline(y=30, line_dash="dash", row=3, col=1)
+    fig.add_trace(go.Bar(x=chart_df.index, y=chart_df["MACD"], name="MACD Diff"), row=4, col=1)
+    fig.update_layout(height=850, xaxis_rangeslider_visible=False, showlegend=True)
+    st.plotly_chart(fig, use_container_width=True)
+    st.dataframe(
+        chart_df[["Close", "MA20", "MA50", "MA200", "RSI", "MACD", "RVOL"]].tail(30).round(2),
+        use_container_width=True,
+    )
+
+
+def render_backtest_guide(stats, trades_df):
+    st.info("策略回測用來回答：如果過去照這套訊號進出，勝率、報酬、風險與持有天數大約如何。它不是保證未來，而是用來檢查策略是否有紀律與正期望。")
+    st.markdown("#### 指標怎麼讀")
+    guide = pd.DataFrame(
+        [
+            {"指標": "交易次數", "意思": "符合進場條件並完成出場的交易筆數", "應用": "太少代表樣本不足，結論要保守"},
+            {"指標": "勝率", "意思": "淨報酬大於 0 的交易比例", "應用": "需搭配獲利因子，不可單看勝率"},
+            {"指標": "平均淨報酬", "意思": "扣除交易成本與滑價後，每筆平均報酬", "應用": "大於 0 才有基本正期望"},
+            {"指標": "獲利因子", "意思": "總獲利 / 總虧損絕對值", "應用": "大於 1 代表回測總獲利高於總虧損"},
+            {"指標": "平均最大回撤", "意思": "進場後期間內平均最深浮虧", "應用": "用來評估心理壓力與停損是否合理"},
+        ]
+    )
+    st.dataframe(guide, use_container_width=True, hide_index=True)
+    if not trades_df.empty:
+        st.markdown("#### 表格欄位怎麼來")
+        st.caption("訊號日由策略條件產生；進場日採下一交易日開盤；出場日由停損、停利、移動停損或持有期滿決定；淨報酬已扣除雙邊成本。")
+
+
+def render_walk_forward_guide():
+    st.info("Walk-forward 是進階版回測：先用訓練期挑參數或輪廓，再拿下一段測試期驗證，較能降低只對單一歷史區間過度最佳化的風險。")
+    st.dataframe(
+        pd.DataFrame(
+            [
+                {"欄位": "訓練起/訓練迄", "意思": "用來挑最佳權重輪廓的歷史區間"},
+                {"欄位": "測試起/測試迄", "意思": "不用來挑參數，只用來驗證下一段表現"},
+                {"欄位": "採用輪廓", "意思": "訓練期表現最佳的權重設定"},
+                {"欄位": "測試勝率/淨報酬/獲利因子", "意思": "該輪廓在下一段測試區間的實際回測結果"},
+            ]
+        ),
+        use_container_width=True,
+        hide_index=True,
+    )
+
+
+def render_trade_plan(engine, trade_plan, light, advice):
+    st.subheader("交易計畫書")
+    st.caption("以使用者可執行為核心：先看是否允許交易，再看價格、風險、部位與檢查清單。")
+    decision_cols = st.columns(4)
+    decision_cols[0].metric("執行狀態", light)
+    decision_cols[1].metric("風險報酬比", f"{trade_plan.get('rr', 0):.2f}R")
+    decision_cols[2].metric("勝率分數", f"{engine['win_score']:.1f}")
+    decision_cols[3].metric("分級", engine["bucket"])
+    st.info(advice)
+
+    price_cols = st.columns(4)
+    price_cols[0].metric("進場/觀察", f"{trade_plan['entry']:.2f}")
+    price_cols[1].metric("停損", f"{trade_plan['stop']:.2f}")
+    price_cols[2].metric("目標一", f"{trade_plan['target_1']:.2f}")
+    price_cols[3].metric("目標二", f"{trade_plan['target_2']:.2f}")
+
+    plan_df = pd.DataFrame(
+        [
+            {"項目": "進場條件", "內容": "分數與燈號符合，且價格沒有跌破主要風控線"},
+            {"項目": "加碼條件", "內容": "突破後站穩、RVOL 延續、未出現爆量長上影"},
+            {"項目": "減碼條件", "內容": "達目標一可先落袋部分，剩餘部位改用移動停損"},
+            {"項目": "停損條件", "內容": "跌破停損價、跌破 VWAP/突破K低點、或否決條件成立"},
+            {"項目": "禁止事項", "內容": "禁止無計畫攤平，禁止取消停損，禁止忽略財報/重大消息風險"},
+            {"項目": "部位建議", "內容": trade_plan["position_hint"]},
+        ]
+    )
+    st.dataframe(plan_df, use_container_width=True, hide_index=True)
+
+    checklist = pd.DataFrame(
+        [
+            {"檢查": "我知道最大可能虧損是多少", "狀態": "交易前確認"},
+            {"檢查": "停損價已先寫好，不臨場改口", "狀態": "交易前確認"},
+            {"檢查": "若同日停損/停利同時觸發，採保守停損", "狀態": "回測假設"},
+            {"檢查": "若出現否決條件，暫停新倉位", "狀態": "風控規則"},
+        ]
+    )
+    st.markdown("#### 交易前檢查清單")
+    st.dataframe(checklist, use_container_width=True, hide_index=True)
 
 
 def markdown_to_pdf_bytes(markdown_text):
@@ -1276,7 +1701,7 @@ require_app_password()
 
 st.sidebar.header("⚙️ 投審控制台")
 ai_api_key, ai_key_source = resolve_ai_api_key()
-symbol = st.sidebar.text_input("🎯 目標股號", "2206.TW").strip().upper()
+symbol = normalize_symbol(st.sidebar.text_input("🎯 目標股號", "2206.TW"))
 style = st.sidebar.radio("交易週期", ["波段", "投資", "當沖"], horizontal=True)
 mode = st.sidebar.radio("投審模式", ["白馬模式", "黑馬模式"], horizontal=True)
 preset = STYLE_MODE_PRESETS[(style, mode)]
@@ -1349,6 +1774,9 @@ if scan_button:
 
 if analyze_button:
     hist = load_history(symbol, period="1y")
+    hist_long = load_history(symbol, period="5y")
+    if not hist_long.empty:
+        hist = hist_long.tail(252) if len(hist_long) >= 252 else hist
     info = load_info(symbol)
     if hist.empty or len(hist) < 60:
         st.error("查無足夠資料或標的已下市。")
@@ -1376,20 +1804,24 @@ if analyze_button:
     if manual_note:
         st.caption("HITL 備註：" + manual_note)
 
+    render_stock_dashboard(symbol, info, hist, engine, light, advice, trade_plan)
+    st.markdown("---")
+
     tab_matrix, tab_fundamental, tab_technical, tab_backtest, tab_calibration, tab_plan, tab_ai, tab_glossary = st.tabs(["多因子矩陣", "白馬基本面", "黑馬技術面", "策略回測", "權重校準", "交易計畫", "AI 報告", "WallWin 小辭典"])
     with tab_matrix:
-        factor_df = pd.DataFrame([{"因子": k, "分數": round(v, 1), "權重": WEIGHTS[mode][style].get(k, 0)} for k, v in engine["factor_scores"].items()])
-        st.dataframe(factor_df, use_container_width=True, hide_index=True)
-        st.bar_chart(factor_df.set_index("因子")["分數"])
+        render_factor_matrix(engine)
         if engine["hard_flags"]:
             st.error("否決條件：" + "、".join(engine["hard_flags"]))
     with tab_fundamental:
+        st.info("白馬模式不是只等於基本面，但核心會偏向企業品質、估值、現金流、財務安全與股利安全；技術面主要作為風險確認。")
         st.write(f"ROE **{m['roe']:.2f}%** │ ROA **{m['roa']:.2f}%** │ ROIC **{m['roic']:.2f}%** │ 毛利率 **{m['gross_margin']:.2f}%** │ 營益率 **{m['op_margin']:.2f}%** │ 淨利率 **{m['net_margin']:.2f}%**")
         st.write(f"Debt/Equity **{m['debt_to_equity']:.2f}** │ Current Ratio **{m['current_ratio']:.2f}** │ Interest Coverage **{m['interest_coverage']:.2f}**")
         st.write(f"P/E **{m['pe']:.2f}** │ P/B **{m['pb']:.2f}** │ P/S **{m['ps']:.2f}** │ EV/EBITDA **{m['ev_ebitda']:.2f}** │ FCF Yield **{m['fcf_yield']:.2f}%**")
         st.write(f"殖利率 **{m['dividend_yield']:.2f}%** │ 配息率 **{m['payout_ratio']:.2f}%** │ Dividend Safety **{engine['factor_scores']['dividend_safety']:.1f}**")
+        render_fundamental_trend(advanced_data, symbol, engine)
     with tab_technical:
-        st.line_chart(hist[["Close"]].tail(160))
+        st.info("黑馬模式不是只等於技術面，但核心會偏向趨勢、量價、相對強弱、突破品質與失敗防護；基本面主要作為風險過濾。")
+        render_technical_charts(hist_long if not hist_long.empty else hist, symbol)
         st.write(f"相對強弱 **{m['rel_strength']:.2f}%** │ MA50 slope **{m['ma50_slope']:.2f}%** │ MA200 slope **{m['ma200_slope']:.2f}%** │ 52週高點距離 **{m['dist_52w_high']:.2f}%**")
         st.write(f"RVOL **{m['rvol']:.2f}x** │ VCP **{m['vcp']:.2f}%** │ RSI **{m['rsi']:.1f}** │ ADX **{m['adx']:.1f}** │ ATR **{m['atr_pct']:.2f}%**")
         st.write(f"VWAP **{m['vwap']:.2f}** │ 布林寬度分位 **{m['bb_width_rank']:.1f}** │ Gap **{m['gap_pct']:.2f}%** │ 上影線 **{m['upper_shadow']:.2f}%**")
@@ -1397,6 +1829,7 @@ if analyze_button:
             st.write(f"當沖 VWAP **{daytrade['intraday_vwap']:.2f}** │ 5m RVOL **{daytrade['intraday_rvol']:.2f}x** │ 5m RSI **{daytrade['rsi_5m']:.1f}** │ 做多分 **{daytrade['long_bias_score']}** │ 放空分 **{daytrade['short_bias_score']}**")
     with tab_backtest:
         st.subheader("策略回測")
+        st.caption("新手閱讀順序：先看交易次數是否足夠，再看平均淨報酬與獲利因子，最後看最大回撤能不能承受。")
         bt_cols = st.columns(4)
         bt_params = {
             "hold": bt_cols[0].slider("最長持有天數", 5, 80, int(preset["hold"]), 5),
@@ -1412,6 +1845,7 @@ if analyze_button:
         if trades_df.empty:
             st.warning(stats.get("狀態", "沒有可顯示的回測結果"))
         else:
+            render_backtest_guide(stats, trades_df)
             stat_cols = st.columns(4)
             stat_cols[0].metric("交易次數", stats["交易次數"])
             stat_cols[1].metric("勝率", f"{stats['勝率%']:.1f}%")
@@ -1422,6 +1856,7 @@ if analyze_button:
             st.download_button("下載回測 CSV", trades_df.to_csv(index=False).encode("utf-8-sig"), f"{symbol}_backtest.csv", "text/csv")
     with tab_calibration:
         st.subheader("權重校準與輪廓比較")
+        render_walk_forward_guide()
         calibration_df = calibrate_weight_profiles(engine)
         st.dataframe(calibration_df, use_container_width=True, hide_index=True)
         best_profile = calibration_df.iloc[0]
@@ -1470,12 +1905,7 @@ if analyze_button:
                                 "text/csv",
                             )
     with tab_plan:
-        plan_cols = st.columns(4)
-        plan_cols[0].metric("進場/觀察", f"{trade_plan['entry']:.2f}")
-        plan_cols[1].metric("停損", f"{trade_plan['stop']:.2f}")
-        plan_cols[2].metric("目標一", f"{trade_plan['target_1']:.2f}")
-        plan_cols[3].metric("目標二", f"{trade_plan['target_2']:.2f}")
-        st.write(trade_plan["position_hint"])
+        render_trade_plan(engine, trade_plan, light, advice)
     with tab_ai:
         if not ai_api_key:
             st.warning("請在左側輸入使用者自備 Gemini API Key。")
