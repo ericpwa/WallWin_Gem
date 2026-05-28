@@ -53,6 +53,402 @@ WEIGHTS = {
 }
 
 
+WALLWIN_GLOSSARY = [
+    {
+        "category": "WallWin 核心",
+        "term": "多因子矩陣",
+        "formula": "總分 = Σ(因子分數 × 權重)",
+        "explain": "把估值、成長、品質、動能、低波動、流動性與風控轉成同一套 0-100 分矩陣，讓不同股票能被同一把尺比較。",
+        "example": "白馬投資模式會提高 Quality、Value、Risk 權重；黑馬波段模式會提高 Momentum、Liquidity 權重。",
+    },
+    {
+        "category": "WallWin 核心",
+        "term": "白馬模式",
+        "formula": "偏重 Value + Quality + Dividend Safety + Risk Control",
+        "explain": "用來評估成熟、穩健、具長期價值或配息能力的股票。",
+        "example": "ROE 穩定、負債低、FCF 充足且估值合理，白馬分通常較高。",
+    },
+    {
+        "category": "WallWin 核心",
+        "term": "黑馬模式",
+        "formula": "偏重 Momentum + Growth + Liquidity + Breakout Quality",
+        "explain": "用來評估轉機、突破、題材發酵與短中期價格動能較強的股票。",
+        "example": "股價接近 52 週高點、RVOL 放大、VCP 收斂後突破，黑馬分通常較高。",
+    },
+    {
+        "category": "WallWin 核心",
+        "term": "HITL 人機協同",
+        "formula": "校準後分數 = 系統分數 + 催化加分 - 風險扣分",
+        "explain": "Human-in-the-loop，讓使用者把系統拿不到的私房資料或基本面判斷納入校準。",
+        "example": "若公司即將法說且有新訂單，可加催化分；若有訴訟或籌碼風險，可加風險扣分。",
+    },
+    {
+        "category": "交易週期",
+        "term": "波段",
+        "formula": "通常持有數日到數週，重視趨勢、突破與風險報酬比",
+        "explain": "目標是吃一段價格趨勢，而不是只看單日波動或長期股利。",
+        "example": "突破整理區後，以固定停損、停利與移動停損管理部位。",
+    },
+    {
+        "category": "交易週期",
+        "term": "投資",
+        "formula": "通常持有數月到多年，重視企業品質、估值、現金流與股利安全",
+        "explain": "把股票視為企業所有權的一部分，追求長期資本利得與現金分配。",
+        "example": "ROIC 高、FCF 穩定且估值低於歷史分位時，更符合長期投資條件。",
+    },
+    {
+        "category": "交易週期",
+        "term": "當沖",
+        "formula": "同日進出，重視即時流動性、VWAP、分時量能與滑價",
+        "explain": "不隔夜持倉，對成本、滑價、成交量與停損紀律非常敏感。",
+        "example": "5 分 K 站上 VWAP、RVOL 放大且買盤延續，才比較適合做多當沖。",
+    },
+    {
+        "category": "基本面品質",
+        "term": "ROE 股東權益報酬率",
+        "formula": "ROE = 淨利 / 股東權益 × 100%",
+        "explain": "衡量公司用股東資本賺錢的能力。",
+        "example": "ROE 20% 代表每 100 元股東權益約創造 20 元獲利，但仍要搭配負債一起看。",
+    },
+    {
+        "category": "基本面品質",
+        "term": "ROA 資產報酬率",
+        "formula": "ROA = 淨利 / 總資產 × 100%",
+        "explain": "衡量公司運用全部資產創造獲利的效率。",
+        "example": "重資產產業 ROA 通常較低，應和同業比較。",
+    },
+    {
+        "category": "基本面品質",
+        "term": "ROIC 投入資本報酬率",
+        "formula": "ROIC = 稅後營業利益 / 投入資本 × 100%",
+        "explain": "衡量公司把營運資本投入後產生報酬的能力，常用來觀察護城河。",
+        "example": "ROIC 長期高於資金成本，代表公司較可能創造經濟利潤。",
+    },
+    {
+        "category": "基本面品質",
+        "term": "毛利率",
+        "formula": "毛利率 = 毛利 / 營收 × 100%",
+        "explain": "反映產品或服務扣除直接成本後的獲利空間。",
+        "example": "毛利率上升可能代表產品組合改善、漲價能力提升或成本下降。",
+    },
+    {
+        "category": "基本面品質",
+        "term": "營益率",
+        "formula": "營益率 = 營業利益 / 營收 × 100%",
+        "explain": "衡量本業扣除營運費用後的獲利能力。",
+        "example": "營收成長但營益率下降，可能表示費用擴張或價格競爭加劇。",
+    },
+    {
+        "category": "基本面品質",
+        "term": "淨利率",
+        "formula": "淨利率 = 淨利 / 營收 × 100%",
+        "explain": "衡量公司最後留下多少稅後盈餘。",
+        "example": "高淨利率通常代表品牌、技術、規模或成本控管具優勢。",
+    },
+    {
+        "category": "財務安全",
+        "term": "Debt/Equity 負債權益比",
+        "formula": "Debt/Equity = 總負債 / 股東權益",
+        "explain": "衡量公司槓桿程度，越高代表財務風險通常越高。",
+        "example": "景氣循環股若 Debt/Equity 太高，遇到景氣下行時風險會放大。",
+    },
+    {
+        "category": "財務安全",
+        "term": "Current Ratio 流動比率",
+        "formula": "Current Ratio = 流動資產 / 流動負債",
+        "explain": "衡量短期償債能力。",
+        "example": "流動比率低於 1 代表短期負債可能高於短期可用資產。",
+    },
+    {
+        "category": "財務安全",
+        "term": "Interest Coverage 利息保障倍數",
+        "formula": "Interest Coverage = EBIT / 利息費用",
+        "explain": "衡量營業利益能覆蓋利息支出的倍數。",
+        "example": "倍數越高，公司支付利息的壓力通常越低。",
+    },
+    {
+        "category": "現金流",
+        "term": "Operating Cash Flow 營業現金流",
+        "formula": "OCF = 本業營運產生的現金流入 - 流出",
+        "explain": "比盈餘更接近實際收進來的本業現金。",
+        "example": "淨利成長但 OCF 長期偏弱，可能代表應收帳款或存貨壓力。",
+    },
+    {
+        "category": "現金流",
+        "term": "Free Cash Flow 自由現金流",
+        "formula": "FCF = 營業現金流 - 資本支出",
+        "explain": "公司維持營運與投資後可自由分配的現金。",
+        "example": "FCF 穩定的公司較有能力配息、買回庫藏股或還債。",
+    },
+    {
+        "category": "現金流",
+        "term": "FCF Yield 自由現金流殖利率",
+        "formula": "FCF Yield = 自由現金流 / 市值 × 100%",
+        "explain": "用現金流角度衡量估值吸引力。",
+        "example": "FCF Yield 高於同業且現金流穩定，可能代表估值較有安全邊際。",
+    },
+    {
+        "category": "估值",
+        "term": "P/E 本益比",
+        "formula": "P/E = 股價 / 每股盈餘 EPS",
+        "explain": "市場願意為每 1 元盈餘支付多少價格。",
+        "example": "P/E 15 倍代表投資人為 1 元 EPS 支付 15 元股價。",
+    },
+    {
+        "category": "估值",
+        "term": "PEG 本益成長比",
+        "formula": "PEG = P/E / 盈餘成長率",
+        "explain": "把本益比和成長率放在一起看，避免只看便宜或只看成長。",
+        "example": "P/E 30、成長率 30% 時 PEG 約 1；若成長率只有 10%，PEG 約 3。",
+    },
+    {
+        "category": "估值",
+        "term": "P/B 股價淨值比",
+        "formula": "P/B = 股價 / 每股淨值",
+        "explain": "市場價格相對帳面淨資產的倍數。",
+        "example": "金融、資產型公司常用 P/B 和 ROE 一起判斷估值合理性。",
+    },
+    {
+        "category": "估值",
+        "term": "P/S 股價營收比",
+        "formula": "P/S = 市值 / 營收",
+        "explain": "用營收衡量市場估值，常用於獲利尚不穩定的成長股。",
+        "example": "P/S 高但毛利率與成長率下降，估值風險會提高。",
+    },
+    {
+        "category": "估值",
+        "term": "EV/EBITDA",
+        "formula": "EV/EBITDA = 企業價值 / EBITDA",
+        "explain": "用企業價值相對營運現金獲利能力衡量估值，較能納入負債影響。",
+        "example": "同業比較時，EV/EBITDA 較低且成長品質相近，估值通常較有吸引力。",
+    },
+    {
+        "category": "估值",
+        "term": "估值分位 P/E percentile / P/B percentile",
+        "formula": "分位 = 目前估值位於歷史估值序列的位置",
+        "explain": "判斷目前估值相對自身歷史是偏高、偏低或中性。",
+        "example": "P/E 位於歷史 20 分位，代表目前比過去多數時間便宜。",
+    },
+    {
+        "category": "成長與修正",
+        "term": "YoY 年增率",
+        "formula": "YoY = 本期數值 / 去年同期數值 - 1",
+        "explain": "用來消除季節性，觀察和去年同期相比是否成長。",
+        "example": "營收 YoY +25% 代表本月營收比去年同月增加 25%。",
+    },
+    {
+        "category": "成長與修正",
+        "term": "QoQ 季增率",
+        "formula": "QoQ = 本季數值 / 上季數值 - 1",
+        "explain": "觀察短期成長動能是否加速或降溫。",
+        "example": "EPS QoQ 連續轉強，可能表示景氣或產品週期改善。",
+    },
+    {
+        "category": "成長與修正",
+        "term": "Earnings Revision 盈餘修正",
+        "formula": "修正方向 = 分析師上修次數 - 下修次數",
+        "explain": "衡量市場對未來盈餘預期是轉好還是轉差。",
+        "example": "若法說後多家券商上修 EPS，通常有利評價與動能。",
+    },
+    {
+        "category": "股利",
+        "term": "Dividend Yield 殖利率",
+        "formula": "殖利率 = 每股股利 / 股價 × 100%",
+        "explain": "衡量用目前股價買進可取得的股利報酬率。",
+        "example": "殖利率 5% 代表以目前價格買進，股利約占成本 5%。",
+    },
+    {
+        "category": "股利",
+        "term": "Payout Ratio 配息率",
+        "formula": "配息率 = 現金股利 / EPS × 100%",
+        "explain": "衡量盈餘中有多少比例拿來配息。",
+        "example": "配息率長期超過 100%，若沒有特殊原因，股利可持續性較弱。",
+    },
+    {
+        "category": "股利",
+        "term": "Dividend Safety 股利安全性",
+        "formula": "股利安全 = 殖利率合理性 + 配息率 + FCF 覆蓋率",
+        "explain": "判斷股利是否有足夠盈餘與現金流支撐。",
+        "example": "高殖利率但 FCF 不足，可能是陷阱殖利率。",
+    },
+    {
+        "category": "技術動能",
+        "term": "RVOL 相對成交量",
+        "formula": "RVOL = 今日成交量 / 近期平均成交量",
+        "explain": "衡量今天成交量相對平常是否明顯放大。",
+        "example": "RVOL 2.0x 代表成交量約為近期平均的 2 倍，突破可信度通常較高。",
+    },
+    {
+        "category": "技術動能",
+        "term": "VCP 波動收縮型態",
+        "formula": "VCP 可用近期期幅或 ATR 收縮程度近似",
+        "explain": "價格波動逐步收斂，代表籌碼可能沉澱，等待突破方向。",
+        "example": "整理時高低點越縮越窄，最後放量突破，是典型黑馬訊號之一。",
+    },
+    {
+        "category": "技術動能",
+        "term": "RSI 相對強弱指標",
+        "formula": "RSI = 100 - 100 / (1 + 平均漲幅 / 平均跌幅)",
+        "explain": "衡量近期漲跌力道，常用 0-100 判斷動能與過熱。",
+        "example": "RSI 50-70 常代表偏強；超過 80 可能過熱，需看趨勢與量能確認。",
+    },
+    {
+        "category": "技術動能",
+        "term": "Relative Strength 相對強弱",
+        "formula": "相對強弱 = 個股報酬率 - 大盤報酬率",
+        "explain": "觀察個股是否跑贏基準指數。",
+        "example": "大盤跌 3%，個股漲 2%，代表相對強弱為 +5%。",
+    },
+    {
+        "category": "趨勢品質",
+        "term": "MA 均線與 MA slope",
+        "formula": "MA = N 日收盤均價；MA slope = MA 現值 / MA 過去值 - 1",
+        "explain": "均線看趨勢位置，斜率看趨勢方向與速度。",
+        "example": "股價在 MA20/MA50 上方且 MA50 slope 為正，趨勢品質較好。",
+    },
+    {
+        "category": "趨勢品質",
+        "term": "Higher High / Higher Low",
+        "formula": "新高高於前高，回檔低點高於前低",
+        "explain": "上升趨勢的價格結構。",
+        "example": "突破後回測不破前低，再創新高，代表多方結構延續。",
+    },
+    {
+        "category": "趨勢品質",
+        "term": "52 週高點距離",
+        "formula": "距離 = 現價 / 52週高點 - 1",
+        "explain": "衡量股價距離一年高點多遠，常用來判斷強勢程度。",
+        "example": "距離 52 週高點 -3% 通常比 -35% 更接近強勢股條件。",
+    },
+    {
+        "category": "趨勢品質",
+        "term": "ADX 趨勢強度",
+        "formula": "ADX 由 +DI、-DI 推導，衡量趨勢強弱",
+        "explain": "ADX 越高代表趨勢越明顯，但不判斷多空方向。",
+        "example": "ADX 高於 25 常被視為趨勢較明確。",
+    },
+    {
+        "category": "風險波動",
+        "term": "ATR 平均真實波幅",
+        "formula": "ATR = True Range 的 N 日平均",
+        "explain": "衡量價格平均波動幅度，常用於停損距離與部位控管。",
+        "example": "ATR% 越高，代表股價日常波動越大，停損需更嚴格或部位要縮小。",
+    },
+    {
+        "category": "風險波動",
+        "term": "布林帶寬度",
+        "formula": "寬度 = (上軌 - 下軌) / 收盤價 × 100%",
+        "explain": "衡量價格波動收縮或擴張。",
+        "example": "布林帶寬度處於低分位後放量突破，常被視為波動擴張訊號。",
+    },
+    {
+        "category": "風險波動",
+        "term": "Gap Risk 跳空風險",
+        "formula": "Gap = 今日開盤 / 昨日收盤 - 1",
+        "explain": "衡量開盤跳空造成停損失效或滑價擴大的風險。",
+        "example": "財報或重大消息後跳空，實際成交價可能遠離原停損價。",
+    },
+    {
+        "category": "量價交易",
+        "term": "VWAP 成交量加權平均價",
+        "formula": "VWAP = Σ(成交價 × 成交量) / Σ成交量",
+        "explain": "衡量當日市場平均成交成本，常用於當沖方向判斷。",
+        "example": "價格站上 VWAP 且量能延續，短線多方較有優勢。",
+    },
+    {
+        "category": "量價交易",
+        "term": "突破量比",
+        "formula": "突破量比 = 突破日成交量 / 近期平均成交量",
+        "explain": "衡量突破是否有成交量支持。",
+        "example": "突破前高但量比低於 1，可能是假突破風險較高。",
+    },
+    {
+        "category": "量價交易",
+        "term": "爆量長上影否決",
+        "formula": "上影線比例 = (最高價 - 收盤價) / 收盤價 × 100%",
+        "explain": "放大量卻留下長上影線，可能代表追價買盤被賣壓壓回。",
+        "example": "突破當日 RVOL 很高但收盤跌回區間，系統會提高失敗警示。",
+    },
+    {
+        "category": "交易計畫",
+        "term": "停損",
+        "formula": "停損價 = 進場價 × (1 - 停損%)",
+        "explain": "事先定義最大可接受虧損，避免單筆交易失控。",
+        "example": "100 元進場、停損 8%，停損價約 92 元。",
+    },
+    {
+        "category": "交易計畫",
+        "term": "停利",
+        "formula": "停利價 = 進場價 × (1 + 停利%)",
+        "explain": "事先定義獲利目標，讓風險報酬比可被評估。",
+        "example": "100 元進場、目標 16%，停利價約 116 元。",
+    },
+    {
+        "category": "交易計畫",
+        "term": "移動停損",
+        "formula": "移動停損價 = 進場後最高價 × (1 - 移動停損%)",
+        "explain": "隨價格創高上移停損，保護已出現的未實現獲利。",
+        "example": "最高漲到 120 元、移動停損 10%，回落到 108 元附近就出場。",
+    },
+    {
+        "category": "交易成本",
+        "term": "交易成本",
+        "formula": "淨報酬 = 毛報酬 - 買進成本 - 賣出成本",
+        "explain": "包含手續費、稅費等，會直接降低實際績效。",
+        "example": "當沖或高週轉策略若成本偏高，勝率再高也可能被成本吃掉。",
+    },
+    {
+        "category": "交易成本",
+        "term": "滑價",
+        "formula": "滑價 = 預期成交價與實際成交價的差異",
+        "explain": "流動性不足或價格快速變動時，實際成交常比預期差。",
+        "example": "想用 100 元買進，但成交在 100.2 元，0.2% 就是買進端滑價。",
+    },
+    {
+        "category": "回測",
+        "term": "勝率",
+        "formula": "勝率 = 獲利交易次數 / 總交易次數 × 100%",
+        "explain": "衡量交易中有多少比例賺錢，但不能單獨代表策略好壞。",
+        "example": "勝率 40% 但平均賺 10%、平均賠 3%，策略仍可能有正期望值。",
+    },
+    {
+        "category": "回測",
+        "term": "獲利因子",
+        "formula": "獲利因子 = 總獲利 / 絕對總虧損",
+        "explain": "衡量每承擔 1 元虧損能換回多少獲利。",
+        "example": "獲利因子 1.8 代表每虧 1 元，總體約賺 1.8 元。",
+    },
+    {
+        "category": "回測",
+        "term": "最大回撤",
+        "formula": "最大回撤 = 權益曲線高點到後續低點的最大跌幅",
+        "explain": "衡量策略最痛的一段資金下滑。",
+        "example": "年化報酬高但最大回撤也很大，實際執行時可能難以承受。",
+    },
+    {
+        "category": "回測",
+        "term": "Walk-forward 校準",
+        "formula": "訓練期選參數/權重 → 下一段測試期驗證 → 向前滾動",
+        "explain": "避免只用同一段歷史資料最佳化，降低過度擬合風險。",
+        "example": "用 2021 年訓練挑最佳輪廓，再用 2022 上半年測試，接著往後滾動。",
+    },
+    {
+        "category": "回測",
+        "term": "Train / Test 訓練窗與測試窗",
+        "formula": "訓練窗 = 選參數資料；測試窗 = 驗證資料",
+        "explain": "訓練窗用來挑選權重輪廓，測試窗用來觀察下一段真實表現。",
+        "example": "訓練 252 日、測試 126 日，約等於用一年資料校準、用半年資料驗證。",
+    },
+    {
+        "category": "風控",
+        "term": "否決條件 Hard Flags",
+        "formula": "若重大風險成立，分數再高也要降級或暫停",
+        "explain": "用來阻止高分但風險不可接受的標的進入交易計畫。",
+        "example": "流動性不足、跌破 VWAP、爆量長上影、ATR 過高都可能成為否決警示。",
+    },
+]
+
+
 def safe_float(val, default=0.0):
     try:
         if val is None or pd.isna(val) or str(val).strip() == "":
@@ -822,6 +1218,56 @@ def build_report_markdown(symbol, engine, light, advice, trade_plan, full_report
 """
 
 
+def render_wallwin_glossary():
+    st.subheader("WallWin 小辭典")
+    st.caption("整理本系統會出現的股市、投資、技術分析、回測與風控名詞，包含解釋、公式與案例。")
+
+    glossary_df = pd.DataFrame(WALLWIN_GLOSSARY)
+    search_col, category_col = st.columns([2, 1])
+    keyword = search_col.text_input("搜尋名詞", placeholder="例如：ROE、RVOL、停損、Walk-forward")
+    categories = ["全部"] + sorted(glossary_df["category"].unique().tolist())
+    selected_category = category_col.selectbox("分類", categories)
+
+    filtered = glossary_df.copy()
+    if selected_category != "全部":
+        filtered = filtered[filtered["category"] == selected_category]
+    if keyword.strip():
+        key = keyword.strip().lower()
+        filtered = filtered[
+            filtered.apply(
+                lambda row: key in " ".join(str(row[col]).lower() for col in ["category", "term", "formula", "explain", "example"]),
+                axis=1,
+            )
+        ]
+
+    metric_cols = st.columns(3)
+    metric_cols[0].metric("收錄名詞", len(glossary_df))
+    metric_cols[1].metric("目前顯示", len(filtered))
+    metric_cols[2].metric("分類數", glossary_df["category"].nunique())
+
+    st.dataframe(
+        filtered[["category", "term", "formula"]].rename(columns={"category": "分類", "term": "名詞", "formula": "公式/判讀"}),
+        use_container_width=True,
+        hide_index=True,
+    )
+
+    st.download_button(
+        "下載 WallWin 小辭典 CSV",
+        glossary_df.rename(columns={"category": "分類", "term": "名詞", "formula": "公式/判讀", "explain": "解釋", "example": "案例"}).to_csv(index=False).encode("utf-8-sig"),
+        "wallwin_glossary.csv",
+        "text/csv",
+    )
+
+    for category in sorted(filtered["category"].unique().tolist()):
+        category_rows = filtered[filtered["category"] == category]
+        st.markdown(f"### {category}")
+        for _, row in category_rows.iterrows():
+            with st.expander(row["term"]):
+                st.markdown(f"**解釋：** {row['explain']}")
+                st.markdown(f"**公式/判讀：** `{row['formula']}`")
+                st.markdown(f"**案例：** {row['example']}")
+
+
 st.set_page_config(page_title=APP_TITLE, layout="wide")
 st.title("💎 " + APP_TITLE)
 st.caption(APP_MISSION)
@@ -930,7 +1376,7 @@ if analyze_button:
     if manual_note:
         st.caption("HITL 備註：" + manual_note)
 
-    tab_matrix, tab_fundamental, tab_technical, tab_backtest, tab_calibration, tab_plan, tab_ai = st.tabs(["多因子矩陣", "白馬基本面", "黑馬技術面", "策略回測", "權重校準", "交易計畫", "AI 報告"])
+    tab_matrix, tab_fundamental, tab_technical, tab_backtest, tab_calibration, tab_plan, tab_ai, tab_glossary = st.tabs(["多因子矩陣", "白馬基本面", "黑馬技術面", "策略回測", "權重校準", "交易計畫", "AI 報告", "WallWin 小辭典"])
     with tab_matrix:
         factor_df = pd.DataFrame([{"因子": k, "分數": round(v, 1), "權重": WEIGHTS[mode][style].get(k, 0)} for k, v in engine["factor_scores"].items()])
         st.dataframe(factor_df, use_container_width=True, hide_index=True)
@@ -1033,41 +1479,43 @@ if analyze_button:
     with tab_ai:
         if not ai_api_key:
             st.warning("請在左側輸入使用者自備 Gemini API Key。")
-            st.stop()
-        ai_client = genai.Client(api_key=ai_api_key)
-        prompt = f"""
-        你是華爾街投審分析師。請以繁體中文輸出投審報告。
-        標的：{symbol}
-        交易週期：{style}
-        模式：{mode}
-        燈號：{light} - {advice}
-        勝率分數：{engine['win_score']}
-        因子分數：{engine['factor_scores']}
-        核心數據：{m}
-        否決條件：{engine['hard_flags']}
-        交易計畫：{trade_plan}
-        HITL：{advanced}
-        請輸出：1.投審結論 2.白馬/黑馬因子解讀 3.進出場計畫 4.否決條件 5.風險控管。
-        必須保留免責：不保證獲利，不構成投資建議。
-        """
-        try:
-            model_names = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash"]
-            report = ""
-            box = st.empty()
-            for model_name in model_names:
-                try:
-                    response = ai_client.models.generate_content_stream(model=model_name, contents=prompt)
-                    for chunk in response:
-                        if getattr(chunk, "text", None):
-                            report += chunk.text
-                            box.markdown(report + "▌")
-                    box.markdown(report)
-                    report_md = build_report_markdown(symbol, engine, light, advice, trade_plan, report)
-                    st.download_button("下載 Markdown 報告", report_md.encode("utf-8-sig"), f"{symbol}_wallwin_report.md", "text/markdown")
-                    st.download_button("下載 PDF 報告", markdown_to_pdf_bytes(report_md), f"{symbol}_wallwin_report.pdf", "application/pdf")
-                    st.success(f"✅ 成功透過 {model_name} 完成報告")
-                    break
-                except Exception as exc:
-                    st.info(f"{model_name} 執行失敗：{exc}")
-        except Exception as exc:
-            st.error(f"AI 報告失敗：{exc}")
+        else:
+            ai_client = genai.Client(api_key=ai_api_key)
+            prompt = f"""
+            你是華爾街投審分析師。請以繁體中文輸出投審報告。
+            標的：{symbol}
+            交易週期：{style}
+            模式：{mode}
+            燈號：{light} - {advice}
+            勝率分數：{engine['win_score']}
+            因子分數：{engine['factor_scores']}
+            核心數據：{m}
+            否決條件：{engine['hard_flags']}
+            交易計畫：{trade_plan}
+            HITL：{advanced}
+            請輸出：1.投審結論 2.白馬/黑馬因子解讀 3.進出場計畫 4.否決條件 5.風險控管。
+            必須保留免責：不保證獲利，不構成投資建議。
+            """
+            try:
+                model_names = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash"]
+                report = ""
+                box = st.empty()
+                for model_name in model_names:
+                    try:
+                        response = ai_client.models.generate_content_stream(model=model_name, contents=prompt)
+                        for chunk in response:
+                            if getattr(chunk, "text", None):
+                                report += chunk.text
+                                box.markdown(report + "▌")
+                        box.markdown(report)
+                        report_md = build_report_markdown(symbol, engine, light, advice, trade_plan, report)
+                        st.download_button("下載 Markdown 報告", report_md.encode("utf-8-sig"), f"{symbol}_wallwin_report.md", "text/markdown")
+                        st.download_button("下載 PDF 報告", markdown_to_pdf_bytes(report_md), f"{symbol}_wallwin_report.pdf", "application/pdf")
+                        st.success(f"✅ 成功透過 {model_name} 完成報告")
+                        break
+                    except Exception as exc:
+                        st.info(f"{model_name} 執行失敗：{exc}")
+            except Exception as exc:
+                st.error(f"AI 報告失敗：{exc}")
+    with tab_glossary:
+        render_wallwin_glossary()
