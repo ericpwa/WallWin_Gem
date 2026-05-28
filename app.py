@@ -4,7 +4,7 @@ import pandas as pd
 import streamlit as st
 import yfinance as yf
 import ta
-import google.generativeai as genai
+from google import genai
 
 try:
     from reportlab.lib.pagesizes import A4
@@ -601,6 +601,72 @@ def hitl_recommendations(style, mode):
     return base
 
 
+def build_hitl_template(style, mode):
+    columns = hitl_recommendations(style, mode)
+    sample = {column: "" for column in columns}
+    sample["股號"] = "2330.TW"
+    if "ROE" in sample:
+        sample.update({"ROE": 25, "ROA": 12, "ROIC": 18, "毛利率": 55, "營益率": 42, "淨利率": 38})
+    if "營收YoY" in sample:
+        sample.update({"營收YoY": 20, "EPSYoY": 25, "分析師上修": 10, "事件催化": "新產品/產業題材"})
+    return pd.DataFrame([sample])
+
+
+def hitl_coverage(advanced_df, style, mode):
+    if advanced_df is None or advanced_df.empty:
+        return 0, []
+    recommended = hitl_recommendations(style, mode)
+    present = [column for column in recommended if column in advanced_df.columns]
+    return round(len(present) / max(len(recommended), 1) * 100, 1), [column for column in recommended if column not in present]
+
+
+def profile_weights(base_weights, profile):
+    adjusted = dict(base_weights)
+    if profile == "品質價值強化":
+        for key in ["value", "quality", "risk"]:
+            adjusted[key] = adjusted.get(key, 0) + 0.05
+        for key in ["momentum", "liquidity"]:
+            adjusted[key] = max(adjusted.get(key, 0) - 0.05, 0)
+    elif profile == "動能突破強化":
+        for key in ["momentum", "liquidity", "growth"]:
+            adjusted[key] = adjusted.get(key, 0) + 0.05
+        for key in ["value", "low_vol", "quality"]:
+            adjusted[key] = max(adjusted.get(key, 0) - 0.05, 0)
+    elif profile == "風控防守強化":
+        for key in ["risk", "low_vol", "quality"]:
+            adjusted[key] = adjusted.get(key, 0) + 0.05
+        for key in ["momentum", "growth", "liquidity"]:
+            adjusted[key] = max(adjusted.get(key, 0) - 0.05, 0)
+    total = sum(adjusted.values())
+    return {key: value / total for key, value in adjusted.items()} if total else base_weights
+
+
+def weighted_factor_score(factor_scores, weights):
+    return round(sum(factor_scores.get(key, 0) * value for key, value in weights.items()), 1)
+
+
+def calibrate_weight_profiles(engine):
+    base = WEIGHTS[engine["mode"]][engine["style"]]
+    profiles = ["原始權重", "品質價值強化", "動能突破強化", "風控防守強化"]
+    rows = []
+    for profile in profiles:
+        weights = base if profile == "原始權重" else profile_weights(base, profile)
+        score = weighted_factor_score(engine["factor_scores"], weights)
+        rows.append(
+            {
+                "權重輪廓": profile,
+                "重新加權分數": score,
+                "分級": score_bucket(score),
+                "Value權重": round(weights.get("value", 0), 2),
+                "Growth權重": round(weights.get("growth", 0), 2),
+                "Quality權重": round(weights.get("quality", 0), 2),
+                "Momentum權重": round(weights.get("momentum", 0), 2),
+                "Risk權重": round(weights.get("risk", 0), 2),
+            }
+        )
+    return pd.DataFrame(rows).sort_values("重新加權分數", ascending=False)
+
+
 def markdown_to_pdf_bytes(markdown_text):
     if SimpleDocTemplate is None:
         raise RuntimeError("PDF 套件未安裝，請確認 requirements.txt 包含 reportlab。")
@@ -689,8 +755,19 @@ with st.sidebar.expander("依選擇自動套用，可人工微調", expanded=Tru
 st.sidebar.subheader("📁 HITL 私房數據")
 recommended_cols = hitl_recommendations(style, mode)
 st.sidebar.info("建議上傳欄位：" + "、".join(recommended_cols[:12]) + ("..." if len(recommended_cols) > 12 else ""))
+st.sidebar.download_button(
+    "下載 HITL CSV 模板",
+    build_hitl_template(style, mode).to_csv(index=False).encode("utf-8-sig"),
+    file_name=f"wallwin_hitl_template_{style}_{mode}.csv",
+    mime="text/csv",
+)
 uploaded_file = st.sidebar.file_uploader("上傳 CSV，第一欄建議為「股號」", type="csv")
 advanced_data = pd.read_csv(uploaded_file) if uploaded_file else None
+coverage_pct, missing_hitl_cols = hitl_coverage(advanced_data, style, mode)
+if uploaded_file:
+    st.sidebar.success(f"HITL 欄位覆蓋率：{coverage_pct:.1f}%")
+    if missing_hitl_cols:
+        st.sidebar.caption("仍缺：" + "、".join(missing_hitl_cols[:8]) + ("..." if len(missing_hitl_cols) > 8 else ""))
 
 st.sidebar.subheader("🛠️ HITL 人工校準")
 with st.sidebar.expander("基本面/催化/風險覆寫", expanded=False):
@@ -762,7 +839,7 @@ if analyze_button:
     if manual_note:
         st.caption("HITL 備註：" + manual_note)
 
-    tab_matrix, tab_fundamental, tab_technical, tab_backtest, tab_plan, tab_ai = st.tabs(["多因子矩陣", "白馬基本面", "黑馬技術面", "策略回測", "交易計畫", "AI 報告"])
+    tab_matrix, tab_fundamental, tab_technical, tab_backtest, tab_calibration, tab_plan, tab_ai = st.tabs(["多因子矩陣", "白馬基本面", "黑馬技術面", "策略回測", "權重校準", "交易計畫", "AI 報告"])
     with tab_matrix:
         factor_df = pd.DataFrame([{"因子": k, "分數": round(v, 1), "權重": WEIGHTS[mode][style].get(k, 0)} for k, v in engine["factor_scores"].items()])
         st.dataframe(factor_df, use_container_width=True, hide_index=True)
@@ -806,6 +883,16 @@ if analyze_button:
             st.caption("採下一交易日開盤進場，逐日檢查停損、停利、移動停損；同日停損/停利同時觸發時採保守停損。")
             st.dataframe(trades_df.tail(40), use_container_width=True, hide_index=True)
             st.download_button("下載回測 CSV", trades_df.to_csv(index=False).encode("utf-8-sig"), f"{symbol}_backtest.csv", "text/csv")
+    with tab_calibration:
+        st.subheader("權重校準與輪廓比較")
+        calibration_df = calibrate_weight_profiles(engine)
+        st.dataframe(calibration_df, use_container_width=True, hide_index=True)
+        best_profile = calibration_df.iloc[0]
+        st.info(
+            f"目前資料下最佳輪廓：{best_profile['權重輪廓']}，"
+            f"重新加權分數 {best_profile['重新加權分數']:.1f}（{best_profile['分級']}）。"
+        )
+        st.caption("此校準為目前標的的因子輪廓比較，下一步可再加入多年度 walk-forward 回測做嚴格參數校準。")
     with tab_plan:
         plan_cols = st.columns(4)
         plan_cols[0].metric("進場/觀察", f"{trade_plan['entry']:.2f}")
@@ -817,7 +904,7 @@ if analyze_button:
         if not ai_api_key:
             st.warning("請在左側輸入使用者自備 Gemini API Key。")
             st.stop()
-        genai.configure(api_key=ai_api_key)
+        ai_client = genai.Client(api_key=ai_api_key)
         prompt = f"""
         你是華爾街投審分析師。請以繁體中文輸出投審報告。
         標的：{symbol}
@@ -834,15 +921,14 @@ if analyze_button:
         必須保留免責：不保證獲利，不構成投資建議。
         """
         try:
-            model_names = [md.name for md in genai.list_models() if "generateContent" in md.supported_generation_methods and "gemini" in md.name.lower() and "vision" not in md.name.lower()]
-            model_names = sorted([name for name in model_names if "1.5" in name or "2.0" in name or "2.5" in name], key=lambda x: (0 if "flash" in x.lower() else 1))[:3]
+            model_names = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash"]
             report = ""
             box = st.empty()
             for model_name in model_names:
                 try:
-                    response = genai.GenerativeModel(model_name).generate_content(prompt, stream=True)
+                    response = ai_client.models.generate_content_stream(model=model_name, contents=prompt)
                     for chunk in response:
-                        if chunk.parts:
+                        if getattr(chunk, "text", None):
                             report += chunk.text
                             box.markdown(report + "▌")
                     box.markdown(report)

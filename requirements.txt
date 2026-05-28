@@ -2,5 +2,5 @@ streamlit
 yfinance
 pandas
 ta
-google-generativeai
+google-genai
 reportlab
