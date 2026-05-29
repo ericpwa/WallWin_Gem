@@ -1021,6 +1021,47 @@ def build_trade_plan(engine, daytrade=None, daytrade_direction="做多"):
     return {"entry": price, "stop": stop, "target_1": price * (1 + preset["target"] / 100), "target_2": price + risk * 3, "position_hint": f"{engine['style']} / {engine['mode']}：分批執行，單筆風險控制於 0.5%-1.0%", "rr": (price * (1 + preset["target"] / 100) - price) / risk}
 
 
+def build_trade_summary_cards(engine, trade_plan):
+    m = engine["metrics"]
+    style = engine["style"]
+    mode = engine["mode"]
+    entry = safe_float(trade_plan["entry"])
+    stop = safe_float(trade_plan["stop"])
+    target_1 = safe_float(trade_plan["target_1"])
+    target_2 = safe_float(trade_plan["target_2"])
+    risk_pct = (entry - stop) / entry * 100 if entry else 0
+    reward_pct = (target_1 - entry) / entry * 100 if entry else 0
+    if style == "當沖":
+        segment = "開盤後 15-90 分鐘確認；不隔夜，收盤前清倉"
+        focus = f"5分K 站穩 VWAP、RVOL > {m['rvol']:.2f}x，且不跌破 ORB/盤中均價"
+        invalid = "跌破 VWAP 或 ORB 低點、量能退潮、收盤前未達目標即退出"
+    elif style == "波段":
+        segment = "5-20 個交易日；以價格站穩進場區與移動停損管理"
+        focus = f"收盤站上 MA20/MA50、RVOL 放大、RSI 維持 45-72，目標看 {target_1:.2f}-{target_2:.2f}"
+        invalid = "收盤跌破停損、跌破 MA20/MA50 或出現爆量長上影"
+    else:
+        segment = "1-3 個月以上分批觀察；以基本面與估值安全邊際為主"
+        focus = "品質分、估值分、現金流與股利安全是否改善；價格回測不破長期趨勢"
+        invalid = "品質分數續弱、財報惡化、跌破長期趨勢或否決條件成立"
+    if engine["hard_flags"]:
+        invalid = " / ".join(engine["hard_flags"]) + "；暫不啟動新倉位"
+    return {
+        "進場價": f"{entry:.2f}",
+        "目標價": f"{target_1:.2f} / {target_2:.2f}",
+        "停損點": f"{stop:.2f}",
+        "建議區段": segment,
+        "觀察重點": focus,
+        "失效條件": invalid,
+    }, {
+        "進場價": f"{style} / {mode} 的觀察或分批起始價",
+        "目標價": f"目標一約 +{reward_pct:.1f}%；目標二用延伸風險報酬管理",
+        "停損點": f"單筆價格風險約 {risk_pct:.1f}%",
+        "建議區段": "依交易週期自動切換時間單位與執行節奏",
+        "觀察重點": "條件未同時成立時，等待下一根確認訊號",
+        "失效條件": "任一失效條件成立，優先保護本金",
+    }
+
+
 def run_signal_backtest(hist, params):
     df = hist.copy().dropna(subset=["Open", "High", "Low", "Close", "Volume"])
     if len(df) < 120:
@@ -1482,7 +1523,6 @@ def build_stock_dashboard_rows(symbol, info, hist, engine, light, advice, trade_
             "否決條件": "、".join(engine["hard_flags"]) if engine["hard_flags"] else "無",
             "建議交易週期": engine["style"],
             "建議模式": engine["mode"],
-            "交易計畫摘要": f"進場 {trade_plan['entry']:.2f} / 停損 {trade_plan['stop']:.2f} / 目標一 {trade_plan['target_1']:.2f}",
         },
     }
     return board
@@ -1627,6 +1667,9 @@ def render_stock_dashboard(symbol, info, hist, engine, light, advice, trade_plan
     render_key_value_board("B. 前一交易日行情", board["前一交易日行情"], columns=4)
     render_key_value_board("C. 即時/最近價格摘要", board["最近價格摘要"], columns=3)
     render_key_value_board("F. WallWin 判讀摘要", board["WallWin 判讀摘要"], columns=3)
+    trade_cards, trade_notes = build_trade_summary_cards(engine, trade_plan)
+    render_section_header("F-1. 交易計畫摘要", "將進場、目標、停損、區段、觀察與失效條件拆開，避免單一卡片資訊過載。")
+    render_card_grid(trade_cards, trade_notes)
     render_score_breakdown(engine)
 
     with st.expander("D. 基本面摘要", expanded=False):
