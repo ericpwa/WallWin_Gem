@@ -1,3 +1,4 @@
+from html import escape
 from io import BytesIO
 
 import pandas as pd
@@ -537,6 +538,33 @@ def interpret_relative(value, unit="分"):
     if value < -8:
         return f"低於基準 {abs(value):.1f}{unit}"
     return f"接近基準 {value:+.1f}{unit}"
+
+
+def score_reason(score, good_text, weak_text):
+    score = safe_float(score)
+    if score >= 80:
+        return f"{good_text}，屬高分區。"
+    if score >= 65:
+        return f"{good_text}，條件成熟但仍需搭配風控。"
+    if score >= 50:
+        return "位於中性區，需等待更多確認訊號。"
+    return f"{weak_text}，目前拖累整體評分。"
+
+
+def score_bar(score):
+    score = clamp(safe_float(score))
+    if score >= 75:
+        color = "#0f9f6e"
+    elif score >= 55:
+        color = "#2f6fed"
+    elif score >= 40:
+        color = "#b7791f"
+    else:
+        color = "#d92d20"
+    return (
+        f"<div class='scorebar'><div style='width:{score:.1f}%;background:{color};'></div></div>"
+        f"<span class='scoretext'>{score:.1f}/100</span>"
+    )
 
 
 def get_secret_value(name, default=""):
@@ -1235,6 +1263,164 @@ FACTOR_LABELS = {
 }
 
 
+FACTOR_REASON_TEXT = {
+    "value": ("估值相對合理或現金流殖利率具吸引力", "估值偏貴、分位偏高或自由現金流不足"),
+    "growth": ("營收、盈餘或中期報酬動能支持成長評價", "成長動能不足或缺少上修訊號"),
+    "quality": ("ROE/ROA/ROIC、利潤率與負債結構支持企業品質", "獲利品質、資本效率或負債結構不足"),
+    "momentum": ("相對強弱、均線斜率、RSI/MACD/ADX 與量能形成動能共振", "趨勢、量能或突破品質尚未成形"),
+    "low_vol": ("ATR、布林寬度與跳空風險處於可控範圍", "波動、跳空或價格震盪風險偏高"),
+    "liquidity": ("成交量、成交金額與 RVOL 足以支撐進出場", "流動性不足，可能放大滑價與出場風險"),
+    "risk": ("財務、波動、流動性與失敗防護條件較完整", "風控條件不足或已有否決訊號"),
+    "dividend_safety": ("殖利率、配息率、FCF 與利息保障支撐股利安全", "股利缺乏現金流或盈餘覆蓋"),
+}
+
+
+def inject_wallwin_styles():
+    st.markdown(
+        """
+        <style>
+        :root {
+            --ww-border: #e5e7eb;
+            --ww-muted: #667085;
+            --ww-ink: #1f2937;
+            --ww-soft: #f8fafc;
+            --ww-blue: #1d4ed8;
+        }
+        .block-container { padding-top: 1.4rem; }
+        h2, h3, h4 { letter-spacing: 0 !important; color: var(--ww-ink); }
+        div[data-testid="stMetric"] {
+            background: #ffffff;
+            border: 1px solid var(--ww-border);
+            border-radius: 8px;
+            padding: 14px 16px;
+            min-height: 96px;
+        }
+        div[data-testid="stMetricLabel"] p {
+            color: var(--ww-muted);
+            font-size: 0.82rem;
+            line-height: 1.25;
+        }
+        div[data-testid="stMetricValue"] {
+            font-size: 1.45rem;
+            line-height: 1.2;
+            color: var(--ww-ink);
+        }
+        .ww-section {
+            margin: 18px 0 10px;
+            padding: 12px 14px;
+            border-left: 4px solid var(--ww-blue);
+            background: var(--ww-soft);
+            border-radius: 6px;
+        }
+        .ww-section-title {
+            font-size: 1.05rem;
+            font-weight: 700;
+            color: var(--ww-ink);
+            margin: 0;
+        }
+        .ww-card-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+            gap: 12px;
+            margin: 10px 0 18px;
+        }
+        .ww-card {
+            border: 1px solid var(--ww-border);
+            border-radius: 8px;
+            padding: 14px 15px;
+            background: #fff;
+            min-height: 92px;
+        }
+        .ww-card-label {
+            color: var(--ww-muted);
+            font-size: 0.78rem;
+            line-height: 1.3;
+            margin-bottom: 8px;
+        }
+        .ww-card-value {
+            color: var(--ww-ink);
+            font-size: 1.28rem;
+            line-height: 1.2;
+            font-weight: 650;
+            overflow-wrap: anywhere;
+        }
+        .ww-card-note {
+            margin-top: 7px;
+            color: var(--ww-muted);
+            font-size: 0.78rem;
+            line-height: 1.35;
+        }
+        .ww-hero {
+            border: 1px solid var(--ww-border);
+            border-radius: 8px;
+            padding: 16px;
+            background: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
+            margin: 10px 0 14px;
+        }
+        .ww-hero-title {
+            font-size: 1.05rem;
+            font-weight: 700;
+            margin-bottom: 6px;
+        }
+        .ww-hero-body {
+            color: var(--ww-muted);
+            font-size: 0.92rem;
+            line-height: 1.55;
+        }
+        .scorebar {
+            width: 120px;
+            height: 8px;
+            background: #eef2f7;
+            border-radius: 999px;
+            display: inline-block;
+            overflow: hidden;
+            vertical-align: middle;
+            margin-right: 8px;
+        }
+        .scorebar > div { height: 100%; border-radius: 999px; }
+        .scoretext {
+            color: var(--ww-ink);
+            font-size: 0.86rem;
+            font-weight: 650;
+        }
+        .stDataFrame { font-size: 0.92rem; }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def render_section_header(title, caption=""):
+    st.markdown(
+        f"<div class='ww-section'><p class='ww-section-title'>{escape(title)}</p>"
+        f"{f'<div class=\"ww-card-note\">{escape(caption)}</div>' if caption else ''}</div>",
+        unsafe_allow_html=True,
+    )
+
+
+def render_card_grid(values, notes=None):
+    notes = notes or {}
+    cards = []
+    for label, value in values.items():
+        note = notes.get(label, "")
+        cards.append(
+            "<div class='ww-card'>"
+            f"<div class='ww-card-label'>{escape(str(label))}</div>"
+            f"<div class='ww-card-value'>{escape(str(value))}</div>"
+            f"{f'<div class=\"ww-card-note\">{escape(str(note))}</div>' if note else ''}"
+            "</div>"
+        )
+    st.markdown(f"<div class='ww-card-grid'>{''.join(cards)}</div>", unsafe_allow_html=True)
+
+
+def render_explain_box(title, body):
+    st.markdown(
+        f"<div class='ww-hero'><div class='ww-hero-title'>{escape(title)}</div>"
+        f"<div class='ww-hero-body'>{escape(body)}</div></div>",
+        unsafe_allow_html=True,
+    )
+
+
 def build_stock_dashboard_rows(symbol, info, hist, engine, light, advice, trade_plan):
     df = hist.copy().dropna(subset=["Open", "High", "Low", "Close", "Volume"])
     latest = df.iloc[-1]
@@ -1291,8 +1477,8 @@ def build_stock_dashboard_rows(symbol, info, hist, engine, light, advice, trade_
             "勝率分數": f"{engine['win_score']:.1f} / 100（{engine['bucket']}）",
             "白馬分": f"{engine['white_score']:.1f}",
             "黑馬分": f"{engine['black_score']:.1f}",
-            "主要加分因子": "、".join(sorted(engine["factor_scores"], key=engine["factor_scores"].get, reverse=True)[:3]),
-            "主要扣分因子": "、".join(sorted(engine["factor_scores"], key=engine["factor_scores"].get)[:3]),
+            "主要加分因子": "、".join(FACTOR_LABELS.get(k, k) for k in sorted(engine["factor_scores"], key=engine["factor_scores"].get, reverse=True)[:3]),
+            "主要扣分因子": "、".join(FACTOR_LABELS.get(k, k) for k in sorted(engine["factor_scores"], key=engine["factor_scores"].get)[:3]),
             "否決條件": "、".join(engine["hard_flags"]) if engine["hard_flags"] else "無",
             "建議交易週期": engine["style"],
             "建議模式": engine["mode"],
@@ -1303,58 +1489,150 @@ def build_stock_dashboard_rows(symbol, info, hist, engine, light, advice, trade_
 
 
 def render_key_value_board(title, values, columns=4):
-    st.markdown(f"### {title}")
-    items = list(values.items())
-    for start in range(0, len(items), columns):
-        cols = st.columns(columns)
-        for col, (label, value) in zip(cols, items[start : start + columns]):
-            col.metric(label, value)
+    render_section_header(title)
+    render_card_grid(values)
+
+
+def score_cell(score):
+    return f"{clamp(score):.1f}/100"
+
+
+def build_fundamental_reason_table(engine):
+    m = engine["metrics"]
+    rows = [
+        {
+            "類別": "估值",
+            "指標": "P/E",
+            "數值": fmt_num(m["pe"]),
+            "得分": score_cell(score_low(m["pe"], 10, 35)),
+            "理由": score_reason(score_low(m["pe"], 10, 35), "本益比位於相對便宜區間", "本益比偏高或獲利支撐不足"),
+        },
+        {
+            "類別": "估值",
+            "指標": "P/B",
+            "數值": fmt_num(m["pb"]),
+            "得分": score_cell(score_low(m["pb"], 1.0, 5.0)),
+            "理由": score_reason(score_low(m["pb"], 1.0, 5.0), "股價淨值比相對合理", "股價淨值比偏高，安全邊際不足"),
+        },
+        {
+            "類別": "估值",
+            "指標": "P/S",
+            "數值": fmt_num(m["ps"]),
+            "得分": score_cell(score_low(m["ps"], 1.0, 8.0)),
+            "理由": score_reason(score_low(m["ps"], 1.0, 8.0), "營收估值相對合理", "營收估值偏高，需更強成長支撐"),
+        },
+        {
+            "類別": "估值",
+            "指標": "EV/EBITDA",
+            "數值": fmt_num(m["ev_ebitda"]),
+            "得分": score_cell(score_low(m["ev_ebitda"], 6, 25)),
+            "理由": score_reason(score_low(m["ev_ebitda"], 6, 25), "企業價值相對營運獲利合理", "企業價值倍數偏高"),
+        },
+        {
+            "類別": "品質",
+            "指標": "ROE",
+            "數值": fmt_num(m["roe"], suffix="%"),
+            "得分": score_cell(score_high(m["roe"], 5, 25)),
+            "理由": score_reason(score_high(m["roe"], 5, 25), "股東權益報酬率具品質支撐", "股東權益報酬率不足"),
+        },
+        {
+            "類別": "品質",
+            "指標": "ROA",
+            "數值": fmt_num(m["roa"], suffix="%"),
+            "得分": score_cell(score_high(m["roa"], 2, 12)),
+            "理由": score_reason(score_high(m["roa"], 2, 12), "資產使用效率良好", "資產報酬偏弱"),
+        },
+        {
+            "類別": "品質",
+            "指標": "ROIC",
+            "數值": fmt_num(m["roic"], suffix="%"),
+            "得分": score_cell(score_high(m["roic"], 5, 20)),
+            "理由": score_reason(score_high(m["roic"], 5, 20), "投入資本報酬具護城河線索", "投入資本報酬不足"),
+        },
+        {
+            "類別": "股利",
+            "指標": "殖利率",
+            "數值": fmt_num(m["dividend_yield"], suffix="%"),
+            "得分": score_cell(score_high(m["dividend_yield"], 1, 6)),
+            "理由": score_reason(score_high(m["dividend_yield"], 1, 6), "殖利率具現金回報吸引力", "殖利率不足或缺乏配息吸引力"),
+        },
+        {
+            "類別": "現金流",
+            "指標": "FCF Yield",
+            "數值": fmt_num(m["fcf_yield"], suffix="%"),
+            "得分": score_cell(score_high(m["fcf_yield"], 0, 8)),
+            "理由": score_reason(score_high(m["fcf_yield"], 0, 8), "自由現金流殖利率支持估值", "自由現金流不足或估值支撐弱"),
+        },
+    ]
+    return pd.DataFrame(rows)
+
+
+def build_technical_reason_table(engine):
+    m = engine["metrics"]
+    rows = [
+        {
+            "指標": "RSI",
+            "數值": fmt_num(m["rsi"], 1),
+            "得分": score_cell(score_range(m["rsi"], 45, 72, 2.0)),
+            "理由": score_reason(score_range(m["rsi"], 45, 72, 2.0), "RSI 位於健康偏強區間", "RSI 過弱或過熱，追價風險提高"),
+        },
+        {
+            "指標": "MACD Diff",
+            "數值": fmt_num(m["macd_diff"], 2),
+            "得分": score_cell(100 if m["macd_diff"] > 0 else 30),
+            "理由": "MACD Diff 大於 0 代表短線動能偏多。" if m["macd_diff"] > 0 else "MACD Diff 低於 0，短線動能仍偏弱。",
+        },
+        {
+            "指標": "ADX",
+            "數值": fmt_num(m["adx"], 1),
+            "得分": score_cell(score_high(m["adx"], 12, 35)),
+            "理由": score_reason(score_high(m["adx"], 12, 35), "ADX 顯示趨勢強度足夠", "ADX 偏低，趨勢方向不夠明確"),
+        },
+        {
+            "指標": "RVOL",
+            "數值": f"{m['rvol']:.2f}x",
+            "得分": score_cell(score_high(m["rvol"], 0.8, 2.5)),
+            "理由": score_reason(score_high(m["rvol"], 0.8, 2.5), "相對成交量放大，量能支持訊號", "相對成交量不足，突破可信度較低"),
+        },
+        {
+            "指標": "ATR%",
+            "數值": fmt_num(m["atr_pct"], 2, "%"),
+            "得分": score_cell(score_low(m["atr_pct"], 2.5, 9.0)),
+            "理由": score_reason(score_low(m["atr_pct"], 2.5, 9.0), "波動仍在可控區間", "波動過高，停損與滑價風險提高"),
+        },
+        {
+            "指標": "VCP",
+            "數值": fmt_num(m["vcp"], 2, "%"),
+            "得分": score_cell(score_low(m["vcp"], 4, 18)),
+            "理由": score_reason(score_low(m["vcp"], 4, 18), "波動收縮明顯，具突破前整理特徵", "波動尚未有效收縮"),
+        },
+        {
+            "指標": "52週高點距離",
+            "數值": fmt_num(m["dist_52w_high"], 2, "%"),
+            "得分": score_cell(score_low(abs(m["dist_52w_high"]), 0, 35)),
+            "理由": score_reason(score_low(abs(m["dist_52w_high"]), 0, 35), "價格接近 52 週高點，強勢特徵較明顯", "距離高點較遠，強勢確認不足"),
+        },
+    ]
+    return pd.DataFrame(rows)
 
 
 def render_stock_dashboard(symbol, info, hist, engine, light, advice, trade_plan):
     st.subheader("個股資訊看板")
-    st.caption("第一屏聚焦個股識別、前一交易日行情、最近價格摘要與 WallWin 判讀；基本面與技術面細節放在下方展開。")
+    render_explain_box(
+        "閱讀順序",
+        "先看 WallWin 燈號與否決條件，再看價格是否站上關鍵均線與 VWAP，最後用基本面與技術面摘要確認分數來源。",
+    )
     board = build_stock_dashboard_rows(symbol, info, hist, engine, light, advice, trade_plan)
     render_key_value_board("A. 個股識別", board["識別"], columns=3)
     render_key_value_board("B. 前一交易日行情", board["前一交易日行情"], columns=4)
     render_key_value_board("C. 即時/最近價格摘要", board["最近價格摘要"], columns=3)
     render_key_value_board("F. WallWin 判讀摘要", board["WallWin 判讀摘要"], columns=3)
+    render_score_breakdown(engine)
 
     with st.expander("D. 基本面摘要", expanded=False):
-        m = engine["metrics"]
-        st.dataframe(
-            pd.DataFrame(
-                [
-                    {"類別": "估值", "指標": "P/E", "數值": fmt_num(m["pe"])},
-                    {"類別": "估值", "指標": "P/B", "數值": fmt_num(m["pb"])},
-                    {"類別": "估值", "指標": "P/S", "數值": fmt_num(m["ps"])},
-                    {"類別": "估值", "指標": "EV/EBITDA", "數值": fmt_num(m["ev_ebitda"])},
-                    {"類別": "品質", "指標": "ROE", "數值": fmt_num(m["roe"], suffix="%")},
-                    {"類別": "品質", "指標": "ROA", "數值": fmt_num(m["roa"], suffix="%")},
-                    {"類別": "品質", "指標": "ROIC", "數值": fmt_num(m["roic"], suffix="%")},
-                    {"類別": "股利", "指標": "殖利率", "數值": fmt_num(m["dividend_yield"], suffix="%")},
-                    {"類別": "現金流", "指標": "FCF Yield", "數值": fmt_num(m["fcf_yield"], suffix="%")},
-                ]
-            ),
-            use_container_width=True,
-            hide_index=True,
-        )
+        st.dataframe(build_fundamental_reason_table(engine), width="stretch", hide_index=True)
     with st.expander("E. 技術面摘要", expanded=False):
-        m = engine["metrics"]
-        st.dataframe(
-            pd.DataFrame(
-                [
-                    {"指標": "RSI", "數值": fmt_num(m["rsi"], 1), "判讀": "45-72 通常較健康，過熱需小心追價"},
-                    {"指標": "MACD Diff", "數值": fmt_num(m["macd_diff"], 2), "判讀": "大於 0 偏多，低於 0 偏弱"},
-                    {"指標": "ADX", "數值": fmt_num(m["adx"], 1), "判讀": "越高代表趨勢越明確"},
-                    {"指標": "ATR%", "數值": fmt_num(m["atr_pct"], 2, "%"), "判讀": "越高代表日常波動越大"},
-                    {"指標": "VCP", "數值": fmt_num(m["vcp"], 2, "%"), "判讀": "越低代表波動越收縮"},
-                    {"指標": "布林寬度分位", "數值": fmt_num(m["bb_width_rank"], 1), "判讀": "低分位後放量，較容易出現波動擴張"},
-                ]
-            ),
-            use_container_width=True,
-            hide_index=True,
-        )
+        st.dataframe(build_technical_reason_table(engine), width="stretch", hide_index=True)
 
 
 def build_factor_matrix(engine):
@@ -1376,22 +1654,51 @@ def build_factor_matrix(engine):
                 "相對權重": round(relative_weight, 3),
                 "相對權重判讀": interpret_relative(relative_weight * 100, "%"),
                 "加權貢獻": round(score * weight, 2),
+                "得分理由": score_reason(score, *FACTOR_REASON_TEXT.get(key, ("條件支持評價", "條件不足"))),
             }
         )
     return pd.DataFrame(rows).sort_values("加權貢獻", ascending=False)
 
 
+def build_score_breakdown(engine, target_mode):
+    weights = WEIGHTS[target_mode][engine["style"]]
+    rows = []
+    for key, weight in weights.items():
+        score = engine["factor_scores"].get(key, 0)
+        rows.append(
+            {
+                "因子": FACTOR_LABELS.get(key, key),
+                "因子分數": round(score, 1),
+                "權重": f"{weight:.0%}",
+                "加權貢獻": round(score * weight, 2),
+                "理由": score_reason(score, *FACTOR_REASON_TEXT.get(key, ("條件支持評價", "條件不足"))),
+            }
+        )
+    return pd.DataFrame(rows).sort_values("加權貢獻", ascending=False)
+
+
+def render_score_breakdown(engine):
+    render_section_header("評分理由拆解", "白馬分與黑馬分皆由同一批因子分數，套用不同模式權重後加總。")
+    score_cols = st.columns(2)
+    with score_cols[0]:
+        st.markdown("#### 白馬分計算")
+        st.dataframe(build_score_breakdown(engine, "白馬模式"), width="stretch", hide_index=True)
+    with score_cols[1]:
+        st.markdown("#### 黑馬分計算")
+        st.dataframe(build_score_breakdown(engine, "黑馬模式"), width="stretch", hide_index=True)
+
+
 def render_factor_matrix(engine):
     st.subheader("多因子矩陣")
-    st.caption("相對分數以 50 分為中性基準；相對權重代表此模式下該因子是否被特別重視。")
+    render_explain_box(
+        "如何閱讀",
+        "相對分數以 50 分為中性基準；相對權重代表此模式下該因子是否被特別重視。最後真正影響總分的是「因子分數 × 權重」得到的加權貢獻。",
+    )
     factor_df = build_factor_matrix(engine)
-    st.dataframe(factor_df, use_container_width=True, hide_index=True)
+    st.dataframe(factor_df, width="stretch", hide_index=True)
     chart_df = factor_df.set_index("因子")[["分數", "加權貢獻"]]
     st.bar_chart(chart_df)
-    st.info(
-        "閱讀方式：分數高代表該因子條件好；權重高代表目前模式更重視該因子；"
-        "加權貢獻高才是最後真正推動總分的力量。"
-    )
+    render_score_breakdown(engine)
 
 
 def build_fundamental_trend_from_hitl(advanced_df, symbol):
@@ -1452,13 +1759,13 @@ def render_fundamental_trend(advanced_data, symbol, engine):
                     {"指標": "FCF Yield", "目前值": fmt_num(m["fcf_yield"], suffix="%"), "資料狀態": "目前快照"},
                 ]
             ),
-            use_container_width=True,
+            width="stretch",
             hide_index=True,
         )
         return
     cutoff = (pd.Timestamp.today() - pd.DateOffset(years=period_years)).strftime("%Y-%m")
     trend_df = trend_df[trend_df["月份"] >= cutoff]
-    st.dataframe(trend_df, use_container_width=True, hide_index=True)
+    st.dataframe(trend_df, width="stretch", hide_index=True)
     chart_source = trend_df.pivot_table(index="月份", columns="指標", values="數值", aggfunc="last")
     st.line_chart(chart_source)
 
@@ -1498,16 +1805,16 @@ def render_technical_charts(hist, symbol):
     fig.add_hline(y=30, line_dash="dash", row=3, col=1)
     fig.add_trace(go.Bar(x=chart_df.index, y=chart_df["MACD"], name="MACD Diff"), row=4, col=1)
     fig.update_layout(height=850, xaxis_rangeslider_visible=False, showlegend=True)
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width="stretch")
     st.dataframe(
         chart_df[["Close", "MA20", "MA50", "MA200", "RSI", "MACD", "RVOL"]].tail(30).round(2),
-        use_container_width=True,
+        width="stretch",
     )
 
 
 def render_backtest_guide(stats, trades_df):
-    st.info("策略回測用來回答：如果過去照這套訊號進出，勝率、報酬、風險與持有天數大約如何。它不是保證未來，而是用來檢查策略是否有紀律與正期望。")
-    st.markdown("#### 指標怎麼讀")
+    render_explain_box("策略回測的功能", "回答「如果過去照這套訊號進出，勝率、報酬、風險與持有天數大約如何」。它不是保證未來，而是用來檢查策略是否有紀律與正期望。")
+    render_section_header("指標怎麼讀")
     guide = pd.DataFrame(
         [
             {"指標": "交易次數", "意思": "符合進場條件並完成出場的交易筆數", "應用": "太少代表樣本不足，結論要保守"},
@@ -1517,14 +1824,14 @@ def render_backtest_guide(stats, trades_df):
             {"指標": "平均最大回撤", "意思": "進場後期間內平均最深浮虧", "應用": "用來評估心理壓力與停損是否合理"},
         ]
     )
-    st.dataframe(guide, use_container_width=True, hide_index=True)
+    st.dataframe(guide, width="stretch", hide_index=True)
     if not trades_df.empty:
         st.markdown("#### 表格欄位怎麼來")
         st.caption("訊號日由策略條件產生；進場日採下一交易日開盤；出場日由停損、停利、移動停損或持有期滿決定；淨報酬已扣除雙邊成本。")
 
 
 def render_walk_forward_guide():
-    st.info("Walk-forward 是進階版回測：先用訓練期挑參數或輪廓，再拿下一段測試期驗證，較能降低只對單一歷史區間過度最佳化的風險。")
+    render_explain_box("Walk-forward 的功能", "先用訓練期挑參數或輪廓，再拿下一段測試期驗證，較能降低只對單一歷史區間過度最佳化的風險。")
     st.dataframe(
         pd.DataFrame(
             [
@@ -1534,7 +1841,7 @@ def render_walk_forward_guide():
                 {"欄位": "測試勝率/淨報酬/獲利因子", "意思": "該輪廓在下一段測試區間的實際回測結果"},
             ]
         ),
-        use_container_width=True,
+        width="stretch",
         hide_index=True,
     )
 
@@ -1565,7 +1872,7 @@ def render_trade_plan(engine, trade_plan, light, advice):
             {"項目": "部位建議", "內容": trade_plan["position_hint"]},
         ]
     )
-    st.dataframe(plan_df, use_container_width=True, hide_index=True)
+    st.dataframe(plan_df, width="stretch", hide_index=True)
 
     checklist = pd.DataFrame(
         [
@@ -1576,7 +1883,7 @@ def render_trade_plan(engine, trade_plan, light, advice):
         ]
     )
     st.markdown("#### 交易前檢查清單")
-    st.dataframe(checklist, use_container_width=True, hide_index=True)
+    st.dataframe(checklist, width="stretch", hide_index=True)
 
 
 def markdown_to_pdf_bytes(markdown_text):
@@ -1672,7 +1979,7 @@ def render_wallwin_glossary():
 
     st.dataframe(
         filtered[["category", "term", "formula"]].rename(columns={"category": "分類", "term": "名詞", "formula": "公式/判讀"}),
-        use_container_width=True,
+        width="stretch",
         hide_index=True,
     )
 
@@ -1694,6 +2001,7 @@ def render_wallwin_glossary():
 
 
 st.set_page_config(page_title=APP_TITLE, layout="wide")
+inject_wallwin_styles()
 st.title("💎 " + APP_TITLE)
 st.caption(APP_MISSION)
 st.caption(DISCLAIMER)
@@ -1738,12 +2046,12 @@ with st.sidebar.expander("基本面/催化/風險覆寫", expanded=False):
     manual_risk = st.slider("人工風險扣分", 0, 30, 0, 1)
     manual_note = st.text_area("人工備註", height=80)
 
-analyze_button = st.sidebar.button("🚀 啟動多因子投審", type="primary", use_container_width=True)
+analyze_button = st.sidebar.button("🚀 啟動多因子投審", type="primary", width="stretch")
 
 st.sidebar.markdown("---")
 st.sidebar.subheader("📡 Watchlist 多檔掃描")
 watchlist_symbols = st.sidebar.text_area("股票清單", "2330.TW, 2317.TW, 2454.TW, 2206.TW", height=80)
-scan_button = st.sidebar.button("📡 掃描 Watchlist", use_container_width=True)
+scan_button = st.sidebar.button("📡 掃描 Watchlist", width="stretch")
 
 if scan_button:
     symbols = parse_watchlist(watchlist_symbols)
@@ -1769,7 +2077,7 @@ if scan_button:
     if "勝率分數" in result_df.columns:
         result_df = result_df.sort_values("勝率分數", ascending=False)
     st.subheader("📡 Watchlist 多因子掃描")
-    st.dataframe(result_df, use_container_width=True, hide_index=True)
+    st.dataframe(result_df, width="stretch", hide_index=True)
     st.download_button("下載 Watchlist CSV", result_df.to_csv(index=False).encode("utf-8-sig"), "wallwin_watchlist.csv", "text/csv")
 
 if analyze_button:
@@ -1813,23 +2121,39 @@ if analyze_button:
         if engine["hard_flags"]:
             st.error("否決條件：" + "、".join(engine["hard_flags"]))
     with tab_fundamental:
-        st.info("白馬模式不是只等於基本面，但核心會偏向企業品質、估值、現金流、財務安全與股利安全；技術面主要作為風險確認。")
-        st.write(f"ROE **{m['roe']:.2f}%** │ ROA **{m['roa']:.2f}%** │ ROIC **{m['roic']:.2f}%** │ 毛利率 **{m['gross_margin']:.2f}%** │ 營益率 **{m['op_margin']:.2f}%** │ 淨利率 **{m['net_margin']:.2f}%**")
-        st.write(f"Debt/Equity **{m['debt_to_equity']:.2f}** │ Current Ratio **{m['current_ratio']:.2f}** │ Interest Coverage **{m['interest_coverage']:.2f}**")
-        st.write(f"P/E **{m['pe']:.2f}** │ P/B **{m['pb']:.2f}** │ P/S **{m['ps']:.2f}** │ EV/EBITDA **{m['ev_ebitda']:.2f}** │ FCF Yield **{m['fcf_yield']:.2f}%**")
-        st.write(f"殖利率 **{m['dividend_yield']:.2f}%** │ 配息率 **{m['payout_ratio']:.2f}%** │ Dividend Safety **{engine['factor_scores']['dividend_safety']:.1f}**")
+        render_explain_box("白馬模式定位", "白馬模式不是只等於基本面，但核心偏向企業品質、估值、現金流、財務安全與股利安全；技術面主要作為風險確認。")
+        render_section_header("基本面評分理由", "每個指標皆以 0-100 分轉換，最後匯入 Value、Quality、Dividend Safety 等因子。")
+        st.dataframe(build_fundamental_reason_table(engine), width="stretch", hide_index=True)
         render_fundamental_trend(advanced_data, symbol, engine)
     with tab_technical:
-        st.info("黑馬模式不是只等於技術面，但核心會偏向趨勢、量價、相對強弱、突破品質與失敗防護；基本面主要作為風險過濾。")
+        render_explain_box("黑馬模式定位", "黑馬模式不是只等於技術面，但核心偏向趨勢、量價、相對強弱、突破品質與失敗防護；基本面主要作為風險過濾。")
+        render_section_header("技術面評分理由", "先看趨勢與量能是否同步，再看波動風險是否可控。")
+        st.dataframe(build_technical_reason_table(engine), width="stretch", hide_index=True)
         render_technical_charts(hist_long if not hist_long.empty else hist, symbol)
-        st.write(f"相對強弱 **{m['rel_strength']:.2f}%** │ MA50 slope **{m['ma50_slope']:.2f}%** │ MA200 slope **{m['ma200_slope']:.2f}%** │ 52週高點距離 **{m['dist_52w_high']:.2f}%**")
-        st.write(f"RVOL **{m['rvol']:.2f}x** │ VCP **{m['vcp']:.2f}%** │ RSI **{m['rsi']:.1f}** │ ADX **{m['adx']:.1f}** │ ATR **{m['atr_pct']:.2f}%**")
-        st.write(f"VWAP **{m['vwap']:.2f}** │ 布林寬度分位 **{m['bb_width_rank']:.1f}** │ Gap **{m['gap_pct']:.2f}%** │ 上影線 **{m['upper_shadow']:.2f}%**")
+        render_card_grid(
+            {
+                "相對強弱": f"{m['rel_strength']:.2f}%",
+                "MA50 slope": f"{m['ma50_slope']:.2f}%",
+                "MA200 slope": f"{m['ma200_slope']:.2f}%",
+                "52週高點距離": f"{m['dist_52w_high']:.2f}%",
+                "VWAP": f"{m['vwap']:.2f}",
+                "Gap": f"{m['gap_pct']:.2f}%",
+                "上影線": f"{m['upper_shadow']:.2f}%",
+            }
+        )
         if style == "當沖" and daytrade and daytrade.get("available"):
-            st.write(f"當沖 VWAP **{daytrade['intraday_vwap']:.2f}** │ 5m RVOL **{daytrade['intraday_rvol']:.2f}x** │ 5m RSI **{daytrade['rsi_5m']:.1f}** │ 做多分 **{daytrade['long_bias_score']}** │ 放空分 **{daytrade['short_bias_score']}**")
+            render_card_grid(
+                {
+                    "當沖 VWAP": f"{daytrade['intraday_vwap']:.2f}",
+                    "5m RVOL": f"{daytrade['intraday_rvol']:.2f}x",
+                    "5m RSI": f"{daytrade['rsi_5m']:.1f}",
+                    "做多分": daytrade["long_bias_score"],
+                    "放空分": daytrade["short_bias_score"],
+                }
+            )
     with tab_backtest:
         st.subheader("策略回測")
-        st.caption("新手閱讀順序：先看交易次數是否足夠，再看平均淨報酬與獲利因子，最後看最大回撤能不能承受。")
+        render_explain_box("新手閱讀順序", "先看交易次數是否足夠，再看平均淨報酬與獲利因子，最後看最大回撤能不能承受。回測是策略體檢，不是未來獲利保證。")
         bt_cols = st.columns(4)
         bt_params = {
             "hold": bt_cols[0].slider("最長持有天數", 5, 80, int(preset["hold"]), 5),
@@ -1852,13 +2176,13 @@ if analyze_button:
             stat_cols[2].metric("平均淨報酬", f"{stats['平均淨報酬%']:.2f}%")
             stat_cols[3].metric("獲利因子", f"{stats['獲利因子']:.2f}")
             st.caption("採下一交易日開盤進場，逐日檢查停損、停利、移動停損；同日停損/停利同時觸發時採保守停損。")
-            st.dataframe(trades_df.tail(40), use_container_width=True, hide_index=True)
+            st.dataframe(trades_df.tail(40), width="stretch", hide_index=True)
             st.download_button("下載回測 CSV", trades_df.to_csv(index=False).encode("utf-8-sig"), f"{symbol}_backtest.csv", "text/csv")
     with tab_calibration:
         st.subheader("權重校準與輪廓比較")
         render_walk_forward_guide()
         calibration_df = calibrate_weight_profiles(engine)
-        st.dataframe(calibration_df, use_container_width=True, hide_index=True)
+        st.dataframe(calibration_df, width="stretch", hide_index=True)
         best_profile = calibration_df.iloc[0]
         st.info(
             f"目前資料下最佳輪廓：{best_profile['權重輪廓']}，"
@@ -1889,7 +2213,7 @@ if analyze_button:
                         wf_cols[2].metric("平均勝率", f"{wf_summary['平均測試勝率%']:.1f}%")
                         wf_cols[3].metric("平均淨報酬", f"{wf_summary['平均測試淨報酬%']:.2f}%")
                         wf_cols[4].metric("平均獲利因子", f"{wf_summary['平均測試獲利因子']:.2f}")
-                        st.dataframe(wf_df, use_container_width=True, hide_index=True)
+                        st.dataframe(wf_df, width="stretch", hide_index=True)
                         st.download_button(
                             "下載 walk-forward 分段結果 CSV",
                             wf_df.to_csv(index=False).encode("utf-8-sig"),
@@ -1897,7 +2221,7 @@ if analyze_button:
                             "text/csv",
                         )
                         if not wf_trades.empty:
-                            st.dataframe(wf_trades.tail(50), use_container_width=True, hide_index=True)
+                            st.dataframe(wf_trades.tail(50), width="stretch", hide_index=True)
                             st.download_button(
                                 "下載 walk-forward 交易明細 CSV",
                                 wf_trades.to_csv(index=False).encode("utf-8-sig"),
