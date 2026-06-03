@@ -742,17 +742,43 @@ def fetch_benchmark(symbol):
     return "^TWII" if symbol.upper().endswith((".TW", ".TWO")) else "SPY"
 
 
-@st.cache_data(ttl=1800)
+def empty_history(reason="", detail=""):
+    df = pd.DataFrame()
+    if reason:
+        df.attrs["wallwin_error"] = reason
+    if detail:
+        df.attrs["wallwin_detail"] = detail
+    return df
+
+
+def history_error(hist):
+    return getattr(hist, "attrs", {}).get("wallwin_error", "")
+
+
+def history_detail(hist):
+    return getattr(hist, "attrs", {}).get("wallwin_detail", "")
+
+
+def is_yfinance_rate_limit(exc):
+    return "YFRateLimitError" in type(exc).__name__ or "RateLimit" in str(exc)
+
+
+@st.cache_data(ttl=21600)
 def load_history(symbol, period="1y", interval="1d"):
-    return yf.Ticker(symbol).history(period=period, interval=interval)
+    try:
+        return yf.Ticker(symbol).history(period=period, interval=interval)
+    except Exception as exc:
+        if is_yfinance_rate_limit(exc):
+            return empty_history("YF_RATE_LIMIT", "Yahoo Finance 暫時限流，請稍後再試或縮小掃描清單。")
+        return empty_history("YF_ERROR", f"{type(exc).__name__}: {exc}")
 
 
-@st.cache_data(ttl=1800)
+@st.cache_data(ttl=21600)
 def load_info(symbol):
     try:
         return yf.Ticker(symbol).info or {}
-    except Exception:
-        return {}
+    except Exception as exc:
+        return {"_wallwin_error": "YF_RATE_LIMIT" if is_yfinance_rate_limit(exc) else "YF_ERROR", "_wallwin_detail": f"{type(exc).__name__}: {exc}"}
 
 
 def build_technical_pack(hist, benchmark_hist=None):
@@ -2178,7 +2204,8 @@ if scan_button:
             hist = load_history(item, period="1y")
             info = load_info(item)
             if hist.empty or len(hist) < 60:
-                rows.append({"股號": item, "狀態": "資料不足"})
+                status = "Yahoo Finance 限流，稍後再試" if history_error(hist) == "YF_RATE_LIMIT" else "資料不足"
+                rows.append({"股號": item, "狀態": status})
                 continue
             engine = score_multifactor(item, info, hist, get_advanced_row(advanced_data, item), style, mode)
             rows.append({"股號": item, "勝率分數": engine["win_score"], "分級": engine["bucket"], "白馬分": engine["white_score"], "黑馬分": engine["black_score"], "Value": round(engine["factor_scores"]["value"], 1), "Growth": round(engine["factor_scores"]["growth"], 1), "Quality": round(engine["factor_scores"]["quality"], 1), "Momentum": round(engine["factor_scores"]["momentum"], 1), "Liquidity": round(engine["factor_scores"]["liquidity"], 1), "否決": "、".join(engine["hard_flags"]), "狀態": "OK"})
@@ -2194,13 +2221,19 @@ if scan_button:
     st.download_button("下載 Watchlist CSV", result_df.to_csv(index=False).encode("utf-8-sig"), "wallwin_watchlist.csv", "text/csv")
 
 if analyze_button:
-    hist = load_history(symbol, period="1y")
     hist_long = load_history(symbol, period="5y")
-    if not hist_long.empty:
-        hist = hist_long.tail(252) if len(hist_long) >= 252 else hist
+    hist = hist_long.tail(252) if not hist_long.empty and len(hist_long) >= 252 else hist_long
+    if hist.empty and history_error(hist_long) != "YF_RATE_LIMIT":
+        hist = load_history(symbol, period="1y")
     info = load_info(symbol)
     if hist.empty or len(hist) < 60:
-        st.error("查無足夠資料或標的已下市。")
+        if history_error(hist_long) == "YF_RATE_LIMIT" or history_error(hist) == "YF_RATE_LIMIT":
+            st.error("Yahoo Finance 目前對 Streamlit Cloud 暫時限流，無法取得股價歷史資料。請稍後再試、減少 Watchlist 掃描次數，或等待快取恢復。")
+            st.info("HITL CSV 已可正常讀取，但它只能補強基本面/私房資料，不能取代 OHLC 股價歷史資料，因此暫時無法計算技術指標、回測與交易計畫。")
+        else:
+            st.error("查無足夠資料或標的已下市。")
+            if history_detail(hist):
+                st.caption("資料源訊息：" + history_detail(hist))
         st.stop()
     advanced = get_advanced_row(advanced_data, symbol)
     if manual_peg > 0:
@@ -2208,7 +2241,10 @@ if analyze_button:
     engine = score_multifactor(symbol, info, hist, advanced, style, mode)
     engine["win_score"] = clamp(engine["win_score"] + manual_catalyst - manual_risk)
     engine["bucket"] = score_bucket(engine["win_score"])
-    daytrade = calculate_daytrade_matrix(load_history(symbol, DAYTRADE_PERIOD, DAYTRADE_INTERVAL)) if style == "當沖" else None
+    daytrade_hist = load_history(symbol, DAYTRADE_PERIOD, DAYTRADE_INTERVAL) if style == "當沖" else pd.DataFrame()
+    daytrade = calculate_daytrade_matrix(daytrade_hist) if style == "當沖" and not daytrade_hist.empty else None
+    if style == "當沖" and history_error(daytrade_hist) == "YF_RATE_LIMIT":
+        st.warning("當沖 5 分鐘資料暫時受 Yahoo Finance 限流影響，本次略過盤中矩陣。")
     daytrade_direction = "做多"
     light, advice = get_light(engine, daytrade, daytrade_direction)
     trade_plan = build_trade_plan(engine, daytrade, daytrade_direction)
