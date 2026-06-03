@@ -614,6 +614,70 @@ def parse_watchlist(raw_text):
     return [token.strip().upper() for token in tokens if token.strip()]
 
 
+def clean_hitl_dataframe(df):
+    if df is None or df.empty:
+        return pd.DataFrame()
+    cleaned = df.copy()
+    cleaned = cleaned.dropna(axis=1, how="all")
+    cleaned.columns = [str(col).strip().strip('"').strip("'") for col in cleaned.columns]
+    cleaned = cleaned.loc[:, [col for col in cleaned.columns if col and not col.startswith("Unnamed")]]
+    for col in cleaned.columns:
+        if cleaned[col].dtype == object:
+            cleaned[col] = cleaned[col].astype(str).str.strip().str.strip('"')
+    return cleaned
+
+
+def parse_quoted_tab_text(text):
+    rows = []
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        if line.endswith(","):
+            line = line[:-1].strip()
+        if line.startswith('"') and line.endswith('"'):
+            line = line[1:-1]
+        line = line.replace('","', ",").replace('""', '"')
+        rows.append([cell.strip().strip('"') for cell in line.split("\t")])
+    if len(rows) < 2:
+        return pd.DataFrame()
+    width = len(rows[0])
+    normalized_rows = []
+    for row in rows[1:]:
+        if len(row) < width:
+            row = row + [""] * (width - len(row))
+        elif len(row) > width:
+            row = row[: width - 1] + [" ".join(row[width - 1 :])]
+        normalized_rows.append(row)
+    return pd.DataFrame(normalized_rows, columns=rows[0])
+
+
+def read_hitl_csv(uploaded_file):
+    data = uploaded_file.getvalue()
+    attempts = []
+    encodings = ["utf-8-sig", "utf-8", "cp950", "big5"]
+    separators = [(",", "comma"), ("\t", "tab")]
+    for encoding in encodings:
+        for sep, sep_name in separators:
+            try:
+                df = pd.read_csv(BytesIO(data), encoding=encoding, sep=sep, engine="python")
+                df = clean_hitl_dataframe(df)
+                if "股號" in df.columns and len(df.columns) > 2:
+                    return df, f"{encoding} / {sep_name}", ""
+                attempts.append(f"{encoding}/{sep_name}: 欄位不足或缺少股號")
+            except Exception as exc:
+                attempts.append(f"{encoding}/{sep_name}: {type(exc).__name__}")
+        try:
+            text = data.decode(encoding)
+            df = clean_hitl_dataframe(parse_quoted_tab_text(text))
+            if "股號" in df.columns and len(df.columns) > 2:
+                return df, f"{encoding} / quoted-tab fallback", ""
+            attempts.append(f"{encoding}/quoted-tab: 欄位不足或缺少股號")
+        except Exception as exc:
+            attempts.append(f"{encoding}/quoted-tab: {type(exc).__name__}")
+    return None, "", "無法讀取 CSV。請使用 UTF-8/UTF-8-SIG/CP950/Big5，並確認第一欄為「股號」。" + "；".join(attempts[-4:])
+
+
 def normalize_symbol_for_advanced(symbol):
     return symbol.upper().replace(".TW", "").replace(".TWO", "")
 
@@ -2075,9 +2139,15 @@ st.sidebar.download_button(
     mime="text/csv",
 )
 uploaded_file = st.sidebar.file_uploader("上傳 CSV，第一欄建議為「股號」", type="csv")
-advanced_data = pd.read_csv(uploaded_file) if uploaded_file else None
-coverage_pct, missing_hitl_cols = hitl_coverage(advanced_data, style, mode)
+advanced_data = None
 if uploaded_file:
+    advanced_data, hitl_read_format, hitl_read_error = read_hitl_csv(uploaded_file)
+    if hitl_read_error:
+        st.sidebar.error(hitl_read_error)
+    else:
+        st.sidebar.success(f"HITL CSV 讀取成功：{hitl_read_format}，{len(advanced_data)} 筆 / {len(advanced_data.columns)} 欄")
+coverage_pct, missing_hitl_cols = hitl_coverage(advanced_data, style, mode)
+if uploaded_file and advanced_data is not None:
     st.sidebar.success(f"HITL 欄位覆蓋率：{coverage_pct:.1f}%")
     if missing_hitl_cols:
         st.sidebar.caption("仍缺：" + "、".join(missing_hitl_cols[:8]) + ("..." if len(missing_hitl_cols) > 8 else ""))
