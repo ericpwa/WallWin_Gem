@@ -2083,6 +2083,62 @@ def build_report_markdown(symbol, engine, light, advice, trade_plan, full_report
 """
 
 
+def build_rule_based_report(symbol, engine, light, advice, trade_plan):
+    factor_rows = build_factor_matrix(engine)
+    top_factors = "、".join(factor_rows.head(3)["因子"].astype(str).tolist())
+    weak_factors = "、".join(factor_rows.tail(3)["因子"].astype(str).tolist())
+    hard_flags = "、".join(engine["hard_flags"]) if engine["hard_flags"] else "無"
+    return f"""## 系統摘要
+- 標的：{symbol}
+- 交易週期：{engine['style']}
+- 模式：{engine['mode']}
+- 燈號：{light}
+- 判定：{advice}
+- 勝率分數：{engine['win_score']:.1f}/100（{engine['bucket']}）
+- 白馬分：{engine['white_score']:.1f}
+- 黑馬分：{engine['black_score']:.1f}
+
+## 因子判讀
+- 主要支撐因子：{top_factors}
+- 主要拖累因子：{weak_factors}
+- 否決條件：{hard_flags}
+
+## 交易計畫
+- 進場/觀察價：{trade_plan['entry']:.2f}
+- 停損：{trade_plan['stop']:.2f}
+- 目標一：{trade_plan['target_1']:.2f}
+- 目標二：{trade_plan['target_2']:.2f}
+- 部位提示：{trade_plan['position_hint']}
+
+## 風險提示
+- 本摘要由 WallWin 規則引擎產生，未呼叫 AI 模型。
+- 若 Gemini 發生高需求、額度不足或模型不可用，仍可先保存本摘要作為投研紀錄。
+- {DISCLAIMER}
+"""
+
+
+def classify_gemini_error(exc):
+    text = str(exc)
+    if "RESOURCE_EXHAUSTED" in text or "429" in text or "Quota" in text or "quota" in text:
+        return "額度不足", "你的 Gemini API Key 目前已超過可用額度或 free tier 限制。請稍後再試，或到 Google AI Studio / Google Cloud 檢查方案與配額。"
+    if "UNAVAILABLE" in text or "503" in text or "high demand" in text:
+        return "模型高需求", "Gemini 模型目前高需求或暫時不可用。這通常是暫時狀態，請稍後重試，或改用 Flash-Lite。"
+    if "NOT_FOUND" in text or "404" in text or "not found" in text:
+        return "模型不可用", "目前 API 版本不支援此模型。系統已移除舊模型 fallback，請使用 Gemini 2.5 系列。"
+    return "AI 執行失敗", "Gemini API 回應異常。請稍後再試，或先下載非 AI 系統摘要。"
+
+
+def render_gemini_failure_table(failures):
+    if not failures:
+        return
+    st.warning("AI 報告本次未完成；下方是可操作的錯誤摘要，避免暴露冗長 API 原始訊息。")
+    st.dataframe(
+        pd.DataFrame(failures),
+        width="stretch",
+        hide_index=True,
+    )
+
+
 def render_wallwin_glossary():
     st.subheader("WallWin 小辭典")
     st.caption("整理本系統會出現的股市、投資、技術分析、回測與風控名詞，包含解釋、公式與案例。")
@@ -2380,45 +2436,52 @@ if analyze_button:
     with tab_plan:
         render_trade_plan(engine, trade_plan, light, advice)
     with tab_ai:
+        render_explain_box("AI 報告使用方式", "為避免浪費使用者 API 額度，Gemini 報告改為按鈕觸發。若 Gemini 高需求、額度不足或模型不可用，可先下載非 AI 系統摘要。")
+        rule_report = build_rule_based_report(symbol, engine, light, advice, trade_plan)
+        rule_report_md = build_report_markdown(symbol, engine, light, advice, trade_plan, rule_report)
+        st.download_button("下載非 AI Markdown 摘要", rule_report_md.encode("utf-8-sig"), f"{symbol}_wallwin_rule_report.md", "text/markdown")
+        st.download_button("下載非 AI PDF 摘要", markdown_to_pdf_bytes(rule_report_md), f"{symbol}_wallwin_rule_report.pdf", "application/pdf")
         if not ai_api_key:
-            st.warning("請在左側輸入使用者自備 Gemini API Key。")
-        else:
+            st.warning("請在左側輸入使用者自備 Gemini API Key；未輸入時仍可下載非 AI 系統摘要。")
+        elif st.button("生成 Gemini AI 報告", type="primary"):
             ai_client = genai.Client(api_key=ai_api_key)
             prompt = f"""
-            你是華爾街投審分析師。請以繁體中文輸出投審報告。
+            你是華爾街投審分析師。請以繁體中文輸出精簡但專業的投審報告。
             標的：{symbol}
             交易週期：{style}
             模式：{mode}
             燈號：{light} - {advice}
             勝率分數：{engine['win_score']}
+            白馬分：{engine['white_score']}
+            黑馬分：{engine['black_score']}
             因子分數：{engine['factor_scores']}
-            核心數據：{m}
             否決條件：{engine['hard_flags']}
             交易計畫：{trade_plan}
-            HITL：{advanced}
             請輸出：1.投審結論 2.白馬/黑馬因子解讀 3.進出場計畫 4.否決條件 5.風險控管。
             必須保留免責：不保證獲利，不構成投資建議。
             """
-            try:
-                model_names = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash"]
-                report = ""
-                box = st.empty()
-                for model_name in model_names:
-                    try:
+            model_names = ["gemini-2.5-flash", "gemini-2.5-flash-lite"]
+            report = ""
+            failures = []
+            box = st.empty()
+            for model_name in model_names:
+                try:
+                    with st.spinner(f"正在透過 {model_name} 生成 AI 報告..."):
                         response = ai_client.models.generate_content_stream(model=model_name, contents=prompt)
                         for chunk in response:
                             if getattr(chunk, "text", None):
                                 report += chunk.text
                                 box.markdown(report + "▌")
-                        box.markdown(report)
-                        report_md = build_report_markdown(symbol, engine, light, advice, trade_plan, report)
-                        st.download_button("下載 Markdown 報告", report_md.encode("utf-8-sig"), f"{symbol}_wallwin_report.md", "text/markdown")
-                        st.download_button("下載 PDF 報告", markdown_to_pdf_bytes(report_md), f"{symbol}_wallwin_report.pdf", "application/pdf")
-                        st.success(f"✅ 成功透過 {model_name} 完成報告")
-                        break
-                    except Exception as exc:
-                        st.info(f"{model_name} 執行失敗：{exc}")
-            except Exception as exc:
-                st.error(f"AI 報告失敗：{exc}")
+                    box.markdown(report)
+                    report_md = build_report_markdown(symbol, engine, light, advice, trade_plan, report)
+                    st.download_button("下載 AI Markdown 報告", report_md.encode("utf-8-sig"), f"{symbol}_wallwin_report.md", "text/markdown")
+                    st.download_button("下載 AI PDF 報告", markdown_to_pdf_bytes(report_md), f"{symbol}_wallwin_report.pdf", "application/pdf")
+                    st.success(f"✅ 成功透過 {model_name} 完成報告")
+                    break
+                except Exception as exc:
+                    category, action = classify_gemini_error(exc)
+                    failures.append({"模型": model_name, "狀態": category, "建議處理": action})
+            if not report:
+                render_gemini_failure_table(failures)
     with tab_glossary:
         render_wallwin_glossary()
