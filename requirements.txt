@@ -5,3 +5,6 @@ ta
 google-genai
 reportlab
 plotly
+fastapi
+uvicorn
+httpx2

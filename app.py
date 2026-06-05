@@ -8,6 +8,14 @@ import ta
 from google import genai
 
 try:
+    import wallwin_core.api_layer as v3_api
+
+    V3_CORE_AVAILABLE = True
+except Exception:
+    v3_api = None
+    V3_CORE_AVAILABLE = False
+
+try:
     import plotly.graph_objects as go
     from plotly.subplots import make_subplots
 except Exception:
@@ -36,6 +44,7 @@ DISCLAIMER = "本系統輸出為投資決策輔助，不構成投資建議、保
 MIN_ANALYSIS_DAYS = 200
 DAYTRADE_INTERVAL = "5m"
 DAYTRADE_PERIOD = "5d"
+V3_CORE_LABEL = "V3 API-first Core"
 
 
 STYLE_MODE_PRESETS = {
@@ -1552,6 +1561,79 @@ def render_explain_box(title, body):
     )
 
 
+def dataframe_to_api_records(df):
+    if df is None or df.empty:
+        return []
+    records_df = df.copy().reset_index()
+    first_col = records_df.columns[0]
+    if first_col not in ["Date", "Datetime"]:
+        records_df = records_df.rename(columns={first_col: "Date"})
+    return records_df.to_dict(orient="records")
+
+
+def call_v3_analysis(symbol, info, hist, advanced, style, mode, daytrade_hist=None, daytrade_direction="做多"):
+    if not V3_CORE_AVAILABLE:
+        return None
+    payload = {
+        "symbol": symbol,
+        "ohlcv": dataframe_to_api_records(hist),
+        "info": info or {},
+        "advanced": advanced or {},
+        "mode": mode,
+        "fetch": False,
+    }
+    if daytrade_hist is not None and not daytrade_hist.empty:
+        payload["intraday_ohlcv"] = dataframe_to_api_records(daytrade_hist)
+        payload["daytrade_direction"] = daytrade_direction
+    if style == "投資":
+        return v3_api.analyze_long_term(payload)
+    if style == "當沖":
+        return v3_api.analyze_daytrade(payload)
+    return v3_api.analyze_swing(payload)
+
+
+def v3_response_ok(response):
+    return bool(response and response.get("status") == "OK" and response.get("result"))
+
+
+def decorate_light(light):
+    if str(light).startswith(("🟢", "🔵", "🟡", "🔴")):
+        return light
+    return {"綠燈": "🟢 綠燈", "藍燈": "🔵 藍燈", "黃燈": "🟡 黃燈", "紅燈": "🔴 紅燈"}.get(light, light)
+
+
+def render_v3_core_status(response=None):
+    if not V3_CORE_AVAILABLE:
+        st.warning("V3 API-first Core 未載入，本次使用 V2 內建計算流程。")
+        return
+    meta = (response or {}).get("meta", {}) if response else {}
+    status = (response or {}).get("status", "READY") if response else "READY"
+    confidence = meta.get("confidence", "待分析")
+    source_tags = ", ".join(meta.get("source_tags", ["wallwin.rule_engine"]))
+    st.caption(f"{V3_CORE_LABEL}：{status}｜信心等級：{confidence}｜來源：{source_tags}")
+
+
+def v3_backtest_to_v2_tables(response):
+    result = response.get("result", {}) if response else {}
+    trades_df = pd.DataFrame(result.get("trades", []))
+    rename_map = {
+        "signal_date": "訊號日",
+        "entry_date": "進場日",
+        "exit_date": "出場日",
+        "entry": "進場價",
+        "exit": "出場價",
+        "exit_reason": "出場原因",
+        "holding_days": "持有日",
+        "gross_return_pct": "毛報酬率%",
+        "net_return_pct": "淨報酬率%",
+        "max_gain_pct": "期間最大漲幅%",
+        "max_drawdown_pct": "期間最大回撤%",
+    }
+    if not trades_df.empty:
+        trades_df = trades_df.rename(columns=rename_map)
+    return trades_df, result.get("stats", {})
+
+
 def build_stock_dashboard_rows(symbol, info, hist, engine, light, advice, trade_plan):
     df = hist.copy().dropna(subset=["Open", "High", "Low", "Close", "Volume"])
     latest = df.iloc[-1]
@@ -2195,8 +2277,10 @@ st.title("💎 " + APP_TITLE)
 st.caption(APP_MISSION)
 st.caption(DISCLAIMER)
 require_app_password()
+render_v3_core_status()
 
 st.sidebar.header("⚙️ 投審控制台")
+st.sidebar.success("V3 API-first Core 已啟用") if V3_CORE_AVAILABLE else st.sidebar.warning("V3 Core 未啟用，使用 V2 fallback")
 ai_api_key, ai_key_source = resolve_ai_api_key()
 symbol = normalize_symbol(st.sidebar.text_input("🎯 目標股號", "2206.TW"))
 style = st.sidebar.radio("交易週期", ["波段", "投資", "當沖"], horizontal=True)
@@ -2294,19 +2378,30 @@ if analyze_button:
     advanced = get_advanced_row(advanced_data, symbol)
     if manual_peg > 0:
         advanced["PEG"] = manual_peg
-    engine = score_multifactor(symbol, info, hist, advanced, style, mode)
-    engine["win_score"] = clamp(engine["win_score"] + manual_catalyst - manual_risk)
-    engine["bucket"] = score_bucket(engine["win_score"])
     daytrade_hist = load_history(symbol, DAYTRADE_PERIOD, DAYTRADE_INTERVAL) if style == "當沖" else pd.DataFrame()
-    daytrade = calculate_daytrade_matrix(daytrade_hist) if style == "當沖" and not daytrade_hist.empty else None
     if style == "當沖" and history_error(daytrade_hist) == "YF_RATE_LIMIT":
         st.warning("當沖 5 分鐘資料暫時受 Yahoo Finance 限流影響，本次略過盤中矩陣。")
     daytrade_direction = "做多"
-    light, advice = get_light(engine, daytrade, daytrade_direction)
-    trade_plan = build_trade_plan(engine, daytrade, daytrade_direction)
+    v3_analysis_response = call_v3_analysis(symbol, info, hist, advanced, style, mode, daytrade_hist, daytrade_direction)
+    if v3_response_ok(v3_analysis_response):
+        engine = v3_analysis_response["result"]["engine"]
+        engine["win_score"] = clamp(engine["win_score"] + manual_catalyst - manual_risk)
+        engine["bucket"] = score_bucket(engine["win_score"])
+        daytrade = v3_analysis_response["result"].get("daytrade")
+        light = decorate_light(v3_analysis_response["result"]["light"])
+        advice = v3_analysis_response["result"]["advice"]
+        trade_plan = v3_analysis_response["result"]["trade_plan"]
+    else:
+        engine = score_multifactor(symbol, info, hist, advanced, style, mode)
+        engine["win_score"] = clamp(engine["win_score"] + manual_catalyst - manual_risk)
+        engine["bucket"] = score_bucket(engine["win_score"])
+        daytrade = calculate_daytrade_matrix(daytrade_hist) if style == "當沖" and not daytrade_hist.empty else None
+        light, advice = get_light(engine, daytrade, daytrade_direction)
+        trade_plan = build_trade_plan(engine, daytrade, daytrade_direction)
     m = engine["metrics"]
 
     st.subheader(f"{symbol} 投審結論")
+    render_v3_core_status(v3_analysis_response)
     top_cols = st.columns(5)
     top_cols[0].metric("燈號", light)
     top_cols[1].metric("勝率分數", f"{engine['win_score']:.1f}", engine["bucket"])
@@ -2370,7 +2465,21 @@ if analyze_button:
             "fee": st.slider("單邊交易成本%", 0.0, 1.0, 0.1425, 0.01),
             "slippage": st.slider("單邊滑價%", 0.0, 1.0, 0.10, 0.01),
         }
-        trades_df, stats = run_signal_backtest(hist, bt_params)
+        v3_backtest_response = None
+        if V3_CORE_AVAILABLE:
+            v3_backtest_response = v3_api.backtest_signal(
+                {
+                    "symbol": symbol,
+                    "ohlcv": dataframe_to_api_records(hist),
+                    "params": bt_params,
+                    "fetch": False,
+                }
+            )
+        if v3_response_ok(v3_backtest_response):
+            render_v3_core_status(v3_backtest_response)
+            trades_df, stats = v3_backtest_to_v2_tables(v3_backtest_response)
+        else:
+            trades_df, stats = run_signal_backtest(hist, bt_params)
         if trades_df.empty:
             st.warning(stats.get("狀態", "沒有可顯示的回測結果"))
         else:

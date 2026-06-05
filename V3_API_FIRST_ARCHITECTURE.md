@@ -2,6 +2,14 @@
 
 日期：2026-06-05
 
+最新狀態：
+
+| 階段 | 狀態 | 說明 |
+|---|---|---|
+| Phase 1 | 完成 | 已建立 `wallwin_core` Python API-first core |
+| Phase 2A | 完成 | Streamlit V2 分析與回測流程已優先呼叫 V3 core，失敗時回退 V2 |
+| Phase 3A | 完成 | 已新增 FastAPI HTTP layer：`api_app.py` |
+
 ## 1. CTO 級結論
 
 WallWin Gem V2 已經具備量化引擎與 Streamlit 操作控制台，但目前主要技術債是 `app.py` 同時承擔 UI、資料抓取、量化計算、AI 報告、CSV/HITL、回測與視覺化。這種架構可以快速做產品驗證，但不適合直接接 Custom GPT Actions，因為外部系統需要穩定、可測試、可重現的 API contract。
@@ -14,7 +22,7 @@ V3 不應重做 UI，也不應一次把 Streamlit 改成後端服務。最小可
 4. 需要外部 HTTP 呼叫時，再用 FastAPI 包裝 facade。
 5. 最後輸出 OpenAPI schema 給台股GPT Custom GPT Actions。
 
-目前第一階段已採用此路線，新增 `wallwin_core`，不破壞 V2 既有 `app.py`。
+目前已完成 Phase 1、Phase 2A、Phase 3A。`app.py` 保留 V2 操作體驗，但分析與回測已優先走 V3 core；`api_app.py` 提供 HTTP endpoint。
 
 ## 2. V2 現有功能盤點
 
@@ -22,8 +30,9 @@ V3 不應重做 UI，也不應一次把 Streamlit 改成後端服務。最小可
 
 | 路徑 | 功能 | V3 判斷 |
 |---|---|---|
-| `app.py` | Streamlit UI、資料抓取、量化計算、回測、AI 報告、HITL、CSS | V2 主程式保留，但逐步瘦身 |
-| `requirements.txt` | Streamlit、yfinance、pandas、ta、google-genai、reportlab、plotly | Phase 1 不新增依賴 |
+| `app.py` | Streamlit UI、資料抓取、量化計算、回測、AI 報告、HITL、CSS | V2 主程式保留；Phase 2A 已優先接 V3 core |
+| `api_app.py` | FastAPI HTTP layer | Phase 3A 新增 |
+| `requirements.txt` | Streamlit、yfinance、pandas、ta、google-genai、reportlab、plotly、FastAPI、Uvicorn | Phase 3A 新增 API 依賴 |
 | `.streamlit/` | Streamlit secrets/config | 保留 |
 | `SECURITY.md` | GitHub 安全政策 | 保留 |
 | `WALLWIN_OPTIMIZATION_PROPOSAL.md` | 先前優化方案 | 保留 |
@@ -164,7 +173,9 @@ Output：
   "service": "WallWin_Gem",
   "version": "3.0.0-phase1",
   "mode": "api-first-phase1",
-  "fastapi_enabled": false
+  "fastapi_enabled": true,
+  "http_layer": "FastAPI",
+  "http_version": "3.0.0-phase3a"
 }
 ```
 
@@ -358,9 +369,21 @@ Phase 1 報告為規則式 Markdown，不呼叫 Gemini，避免 quota/503 影響
 | 新增 unittest 驗收 | 完成 |
 | 不修改 `app.py`，保留 V2 UI | 完成 |
 
-### Phase 2：Streamlit 接 Core
+### Phase 2A：Streamlit 接 Core
 
-將 `app.py` 內與 `wallwin_core` 重複的計算函式逐步改為引用 core。每次只替換一個功能面，替換後做 UI browser verification。
+狀態：已完成。
+
+已完成接入：
+
+| UI 流程 | 接入方式 |
+|---|---|
+| 多因子分析 | `call_v3_analysis()` 優先呼叫 `wallwin_core.api_layer` |
+| 燈號/交易計畫 | 使用 V3 response 的 `light/advice/trade_plan` |
+| 策略回測 | 優先呼叫 `v3_api.backtest_signal()`，再轉回 V2 中文表格 |
+| V3 狀態提示 | 主畫面與 sidebar 顯示 V3 core 狀態、信心等級、來源標記 |
+| fallback | V3 失敗時使用 V2 原函式，避免 UI 中斷 |
+
+後續可再逐步瘦身：
 
 優先順序：
 
@@ -369,17 +392,32 @@ Phase 1 報告為規則式 Markdown，不呼叫 Gemini，避免 quota/503 影響
 3. `calculate_daytrade_matrix`
 4. `score_multifactor`
 
-### Phase 3：FastAPI HTTP Layer
+### Phase 3A：FastAPI HTTP Layer
 
-必要時新增：
+狀態：已完成。
+
+已新增：
 
 | 檔案 | 功能 |
 |---|---|
 | `api_app.py` | FastAPI app |
-| `openapi.wallwin.json` | GPT Actions schema |
 | `tests/test_fastapi_api.py` | HTTP endpoint 測試 |
 
-建議先用 API key header，例如 `X-WallWin-API-Key`，不要開放匿名高頻呼叫。
+本機啟動：
+
+```powershell
+python -m uvicorn api_app:app --host 127.0.0.1 --port 8000
+```
+
+本機連結：
+
+| Endpoint | URL |
+|---|---|
+| Health | `http://127.0.0.1:8000/health` |
+| API Docs | `http://127.0.0.1:8000/docs` |
+| OpenAPI JSON | `http://127.0.0.1:8000/openapi.json` |
+
+Phase 3B 建議先加入 API key header，例如 `X-WallWin-API-Key`，再對外開放，避免匿名高頻呼叫。
 
 ### Phase 4：台股GPT Actions
 
@@ -410,10 +448,10 @@ Phase 1 報告為規則式 Markdown，不呼叫 Gemini，避免 quota/503 影響
 
 | 檔案 | 階段 |
 |---|---|
-| `app.py` | Phase 2：Streamlit 改呼叫 core |
-| `requirements.txt` | Phase 3：若導入 FastAPI 才新增 |
-| `api_app.py` | Phase 3 |
-| `openapi.wallwin.json` | Phase 4 |
+| `app.py` | Phase 2A 已修改；後續可繼續瘦身 |
+| `requirements.txt` | Phase 3A 已新增 `fastapi`、`uvicorn`、`httpx2` |
+| `api_app.py` | Phase 3A 已新增 |
+| `openapi.wallwin.json` | Phase 4 可由 `/openapi.json` 匯出 |
 
 ## 8. 測試方式與驗收標準
 
@@ -421,18 +459,20 @@ Phase 1 報告為規則式 Markdown，不呼叫 Gemini，避免 quota/503 影響
 
 ```powershell
 python -m py_compile wallwin_core\__init__.py wallwin_core\schemas.py wallwin_core\quant_engine.py wallwin_core\data_layer.py wallwin_core\api_layer.py
+python -m py_compile app.py api_app.py
 python -m unittest discover -s tests
+python -m uvicorn api_app:app --host 127.0.0.1 --port 8000
 ```
 
 ### 驗收標準
 
 | 驗收項目 | 標準 |
 |---|---|
-| V2 UI 未破壞 | `app.py` 不在 Phase 1 修改 |
+| V2 UI 未破壞 | Streamlit 可啟動並回應 200 |
 | API 可呼叫 | `health()`、三種 analyze、scan、backtest、risk、export 均有 Python callable |
+| HTTP API 可呼叫 | `/health` 回傳 `fastapi_enabled=true` |
 | 可測試 | unittest 通過 |
 | 可重現 | 同一筆 OHLCV/input 得到同一組分數 |
 | 錯誤可控 | 資料不足、欄位錯誤、來源限流以 status 回傳 |
 | 無 AI 幻覺計算 | 分數/燈號/回測/風控不呼叫 Gemini |
 | 無 Google Finance | Data Layer 僅支援 yfinance 與顯式 input |
-
