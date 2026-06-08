@@ -1333,12 +1333,13 @@ def hitl_field_tiers(style, mode):
         required += ["盤中催化"]
         useful += ["新聞時間", "隔日沖風險"]
         optional += ["券資變化"]
-    deduped = {}
+    deduped = {"required": [], "useful": [], "optional": []}
+    seen = set()
     for tier_name, values in {"required": required, "useful": useful, "optional": optional}.items():
-        deduped[tier_name] = []
         for value in values:
-            if value not in deduped[tier_name] and not any(value in deduped[prev] for prev in ["required", "useful", "optional"] if prev != tier_name):
+            if value not in seen:
                 deduped[tier_name].append(value)
+                seen.add(value)
     return deduped
 
 
