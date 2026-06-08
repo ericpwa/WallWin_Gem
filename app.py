@@ -1,3 +1,4 @@
+import json
 from html import escape
 from io import BytesIO
 
@@ -5,7 +6,6 @@ import pandas as pd
 import streamlit as st
 import yfinance as yf
 import ta
-from google import genai
 
 try:
     import wallwin_core.api_layer as v3_api
@@ -603,19 +603,6 @@ def require_app_password():
             st.rerun()
         st.error("密碼錯誤，請重新輸入。")
     st.stop()
-
-
-def resolve_ai_api_key():
-    allow_owner_key = truthy_secret("ALLOW_OWNER_KEY", default=False)
-    owner_key = get_secret_value("GEMINI_API_KEY") if allow_owner_key else ""
-    st.sidebar.markdown("---")
-    st.sidebar.subheader("🔑 AI 報告 API Key")
-    if allow_owner_key and owner_key:
-        st.sidebar.success("Owner Key 模式已啟用")
-        return owner_key, "owner"
-    user_key = st.sidebar.text_input("Gemini API Key（由使用者自備）", type="password").strip()
-    st.sidebar.caption("外部使用者若要產生 AI 報告，必須使用自己的 Gemini API Key。")
-    return user_key, "user" if user_key else "missing"
 
 
 def parse_watchlist(raw_text):
@@ -2226,7 +2213,7 @@ def build_report_markdown(symbol, engine, light, advice, trade_plan, full_report
 - 目標二：{trade_plan['target_2']:.2f}
 - 部位：{trade_plan['position_hint']}
 
-## AI 報告
+## 投審資料
 {full_report}
 
 ---
@@ -2263,31 +2250,104 @@ def build_rule_based_report(symbol, engine, light, advice, trade_plan):
 
 ## 風險提示
 - 本摘要由 WallWin 規則引擎產生，未呼叫 AI 模型。
-- 若 Gemini 發生高需求、額度不足或模型不可用，仍可先保存本摘要作為投研紀錄。
+- 若需要 AI 投審會式解讀，請將 WallWin 結構化資料包交給台股GPT V2。
 - {DISCLAIMER}
 """
 
 
-def classify_gemini_error(exc):
-    text = str(exc)
-    if "RESOURCE_EXHAUSTED" in text or "429" in text or "Quota" in text or "quota" in text:
-        return "額度不足", "你的 Gemini API Key 目前已超過可用額度或 free tier 限制。請稍後再試，或到 Google AI Studio / Google Cloud 檢查方案與配額。"
-    if "UNAVAILABLE" in text or "503" in text or "high demand" in text:
-        return "模型高需求", "Gemini 模型目前高需求或暫時不可用。這通常是暫時狀態，請稍後重試，或改用 Flash-Lite。"
-    if "NOT_FOUND" in text or "404" in text or "not found" in text:
-        return "模型不可用", "目前 API 版本不支援此模型。系統已移除舊模型 fallback，請使用 Gemini 2.5 系列。"
-    return "AI 執行失敗", "Gemini API 回應異常。請稍後再試，或先下載非 AI 系統摘要。"
+def build_taigpt_decision_package(symbol, engine, light, advice, trade_plan, rule_report):
+    m = engine["metrics"]
+    return {
+        "package_name": "WallWin-Gem 結構化投審資料包",
+        "target_gpt": "台股+ETF｜投資決策輔助系統 v2.0",
+        "target_gpt_url": "https://chatgpt.com/g/g-6a1f7699ad6081919b2aa10259f8cab3-tai-gu-etf-tou-zi-jue-ce-fu-zhu-xi-tong-v2-0",
+        "usage_instruction": [
+            "請將此資料包上傳或貼給台股GPT V2。",
+            "台股GPT V2 應只根據 WallWin-Gem 已計算結果、使用者提供資料與明確來源開投審會。",
+            "不得自行編造新數字；缺資料必須標示待驗證。",
+            "本資料包不構成投資建議，不保證獲利或勝率。",
+        ],
+        "wallwin_result": {
+            "symbol": symbol,
+            "style": engine["style"],
+            "mode": engine["mode"],
+            "light": light,
+            "advice": advice,
+            "win_score": engine["win_score"],
+            "white_score": engine["white_score"],
+            "black_score": engine["black_score"],
+            "bucket": engine["bucket"],
+            "hard_flags": engine["hard_flags"],
+            "factor_scores": engine["factor_scores"],
+            "weights": engine.get("weights", WEIGHTS[engine["mode"]][engine["style"]]),
+        },
+        "key_metrics": {
+            "price": m.get("price"),
+            "volume": m.get("volume"),
+            "rvol": m.get("rvol"),
+            "atr_pct": m.get("atr_pct"),
+            "rsi": m.get("rsi"),
+            "macd_diff": m.get("macd_diff"),
+            "ma20": m.get("ma20"),
+            "ma50": m.get("ma50"),
+            "ma200": m.get("ma200"),
+            "pe": m.get("pe"),
+            "pb": m.get("pb"),
+            "ps": m.get("ps"),
+            "roe": m.get("roe"),
+            "roa": m.get("roa"),
+            "roic": m.get("roic"),
+            "fcf_yield": m.get("fcf_yield"),
+            "debt_to_equity": m.get("debt_to_equity"),
+        },
+        "trade_plan": trade_plan,
+        "rule_report_markdown": rule_report,
+        "source_policy": {
+            "calculation_source": "WallWin-Gem rule engine / V3 API-first core",
+            "ai_role": "投審會式解讀、反方質疑、HITL 補資料與決策矩陣整理",
+            "ai_forbidden": "不得重新計算 WallWin 分數；不得自行補齊未提供財務或行情數字；不得保證獲利。",
+        },
+        "disclaimer": DISCLAIMER,
+    }
 
 
-def render_gemini_failure_table(failures):
-    if not failures:
-        return
-    st.warning("AI 報告本次未完成；下方是可操作的錯誤摘要，避免暴露冗長 API 原始訊息。")
-    st.dataframe(
-        pd.DataFrame(failures),
-        width="stretch",
-        hide_index=True,
-    )
+def build_taigpt_package_markdown(package):
+    result = package["wallwin_result"]
+    plan = package["trade_plan"]
+    lines = [
+        "# WallWin-Gem 結構化投審資料包",
+        "",
+        "請將本資料包交給《台股+ETF｜投資決策輔助系統 v2.0》進行 AI 投審會式解讀。",
+        "",
+        "## 使用規則",
+        "- 台股GPT V2 只能解讀 WallWin-Gem 已計算結果、使用者提供資料與明確來源。",
+        "- 不得自行編造新數字；缺資料必須標示〔待驗證〕。",
+        "- AI 只做投審演繹，不取代 WallWin-Gem 的數學計算。",
+        "",
+        "## WallWin 結論",
+        f"- 標的：{result['symbol']}",
+        f"- 交易週期：{result['style']}",
+        f"- 投審模式：{result['mode']}",
+        f"- 燈號：{result['light']}，{result['advice']}",
+        f"- 勝率分數：{result['win_score']} / 100（{result['bucket']}）",
+        f"- 白馬分：{result['white_score']}；黑馬分：{result['black_score']}",
+        f"- 否決條件：{'、'.join(result['hard_flags']) if result['hard_flags'] else '無'}",
+        "",
+        "## 交易計畫",
+        f"- 進場/觀察：{plan['entry']:.2f}",
+        f"- 停損：{plan['stop']:.2f}",
+        f"- 目標一：{plan['target_1']:.2f}",
+        f"- 目標二：{plan['target_2']:.2f}",
+        f"- 部位提示：{plan['position_hint']}",
+        "",
+        "## WallWin 規則摘要",
+        package["rule_report_markdown"],
+        "",
+        f"GPT 連結：{package['target_gpt_url']}",
+        "",
+        f"免責：{package['disclaimer']}",
+    ]
+    return "\n".join(lines)
 
 
 def render_wallwin_glossary():
@@ -2353,7 +2413,6 @@ if V3_CORE_AVAILABLE:
     st.sidebar.success("V3 API-first Core 已啟用")
 else:
     st.sidebar.warning("V3 Core 未啟用，使用 V2 fallback")
-ai_api_key, ai_key_source = resolve_ai_api_key()
 symbol = normalize_symbol(st.sidebar.text_input("🎯 目標股號", "2206.TW"))
 style = st.sidebar.radio("交易週期", ["波段", "投資", "當沖"], horizontal=True)
 mode = st.sidebar.radio("投審模式", ["白馬模式", "黑馬模式"], horizontal=True)
@@ -2523,7 +2582,7 @@ if analyze_button:
     render_stock_dashboard(symbol, info, hist, engine, light, advice, trade_plan)
     st.markdown("---")
 
-    tab_matrix, tab_fundamental, tab_technical, tab_backtest, tab_calibration, tab_plan, tab_ai, tab_glossary = st.tabs(["多因子矩陣", "白馬基本面", "黑馬技術面", "策略回測", "權重校準", "交易計畫", "AI 報告", "WallWin 小辭典"])
+    tab_matrix, tab_fundamental, tab_technical, tab_backtest, tab_calibration, tab_plan, tab_ai, tab_glossary = st.tabs(["多因子矩陣", "白馬基本面", "黑馬技術面", "策略回測", "權重校準", "交易計畫", "AI 投審會決議", "WallWin 小辭典"])
     with tab_matrix:
         render_factor_matrix(engine)
         if engine["hard_flags"]:
@@ -2653,52 +2712,36 @@ if analyze_button:
     with tab_plan:
         render_trade_plan(engine, trade_plan, light, advice)
     with tab_ai:
-        render_explain_box("AI 報告使用方式", "為避免浪費使用者 API 額度，Gemini 報告改為按鈕觸發。若 Gemini 高需求、額度不足或模型不可用，可先下載非 AI 系統摘要。")
         rule_report = build_rule_based_report(symbol, engine, light, advice, trade_plan)
         rule_report_md = build_report_markdown(symbol, engine, light, advice, trade_plan, rule_report)
+        taigpt_package = build_taigpt_decision_package(symbol, engine, light, advice, trade_plan, rule_report)
+        taigpt_package_json = json.dumps(taigpt_package, ensure_ascii=False, indent=2, default=str)
+        taigpt_package_md = build_taigpt_package_markdown(taigpt_package)
+        render_explain_box(
+            "AI 投審會決議",
+            "WallWin-Gem 只負責可驗證的量化計算、燈號、回測與交易計畫；台股GPT V2 負責投審會式解讀、反方質疑、HITL 補資料與決策矩陣。請下載 WallWin 結構化資料包後，上傳或貼到台股GPT V2。",
+        )
+        st.markdown(
+            "[開啟《台股+ETF｜投資決策輔助系統 v2.0》](https://chatgpt.com/g/g-6a1f7699ad6081919b2aa10259f8cab3-tai-gu-etf-tou-zi-jue-ce-fu-zhu-xi-tong-v2-0)"
+        )
+        st.markdown("#### 使用步驟")
+        st.dataframe(
+            pd.DataFrame(
+                [
+                    {"步驟": "1", "操作": "先在 WallWin-Gem 完成多因子投審。"},
+                    {"步驟": "2", "操作": "下載「台股GPT JSON 資料包」或「台股GPT Markdown 資料包」。"},
+                    {"步驟": "3", "操作": "開啟台股GPT V2，貼上或上傳資料包，要求它依主控指令開投審會。"},
+                    {"步驟": "4", "操作": "台股GPT 只能解讀 WallWin 已計算結果；缺資料需標示待驗證，不得自行補數字。"},
+                ]
+            ),
+            width="stretch",
+            hide_index=True,
+        )
+        st.warning("Gemini 生成報告已取消；本頁不再消耗 Gemini API Key，也不由 AI 重新計算分數。")
+        st.download_button("下載台股GPT JSON 資料包", taigpt_package_json.encode("utf-8-sig"), f"{symbol}_taigpt_decision_package.json", "application/json")
+        st.download_button("下載台股GPT Markdown 資料包", taigpt_package_md.encode("utf-8-sig"), f"{symbol}_taigpt_decision_package.md", "text/markdown")
+        st.download_button("下載台股GPT PDF 資料包", markdown_to_pdf_bytes(taigpt_package_md), f"{symbol}_taigpt_decision_package.pdf", "application/pdf")
         st.download_button("下載非 AI Markdown 摘要", rule_report_md.encode("utf-8-sig"), f"{symbol}_wallwin_rule_report.md", "text/markdown")
         st.download_button("下載非 AI PDF 摘要", markdown_to_pdf_bytes(rule_report_md), f"{symbol}_wallwin_rule_report.pdf", "application/pdf")
-        if not ai_api_key:
-            st.warning("請在左側輸入使用者自備 Gemini API Key；未輸入時仍可下載非 AI 系統摘要。")
-        elif st.button("生成 Gemini AI 報告", type="primary"):
-            ai_client = genai.Client(api_key=ai_api_key)
-            prompt = f"""
-            你是華爾街投審分析師。請以繁體中文輸出精簡但專業的投審報告。
-            標的：{symbol}
-            交易週期：{style}
-            模式：{mode}
-            燈號：{light} - {advice}
-            勝率分數：{engine['win_score']}
-            白馬分：{engine['white_score']}
-            黑馬分：{engine['black_score']}
-            因子分數：{engine['factor_scores']}
-            否決條件：{engine['hard_flags']}
-            交易計畫：{trade_plan}
-            請輸出：1.投審結論 2.白馬/黑馬因子解讀 3.進出場計畫 4.否決條件 5.風險控管。
-            必須保留免責：不保證獲利，不構成投資建議。
-            """
-            model_names = ["gemini-2.5-flash", "gemini-2.5-flash-lite"]
-            report = ""
-            failures = []
-            box = st.empty()
-            for model_name in model_names:
-                try:
-                    with st.spinner(f"正在透過 {model_name} 生成 AI 報告..."):
-                        response = ai_client.models.generate_content_stream(model=model_name, contents=prompt)
-                        for chunk in response:
-                            if getattr(chunk, "text", None):
-                                report += chunk.text
-                                box.markdown(report + "▌")
-                    box.markdown(report)
-                    report_md = build_report_markdown(symbol, engine, light, advice, trade_plan, report)
-                    st.download_button("下載 AI Markdown 報告", report_md.encode("utf-8-sig"), f"{symbol}_wallwin_report.md", "text/markdown")
-                    st.download_button("下載 AI PDF 報告", markdown_to_pdf_bytes(report_md), f"{symbol}_wallwin_report.pdf", "application/pdf")
-                    st.success(f"✅ 成功透過 {model_name} 完成報告")
-                    break
-                except Exception as exc:
-                    category, action = classify_gemini_error(exc)
-                    failures.append({"模型": model_name, "狀態": category, "建議處理": action})
-            if not report:
-                render_gemini_failure_table(failures)
     with tab_glossary:
         render_wallwin_glossary()
