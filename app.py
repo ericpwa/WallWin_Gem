@@ -2263,10 +2263,27 @@ def build_taigpt_decision_package(symbol, engine, light, advice, trade_plan, rul
         "target_gpt_url": "https://chatgpt.com/g/g-6a1f7699ad6081919b2aa10259f8cab3-tai-gu-etf-tou-zi-jue-ce-fu-zhu-xi-tong-v2-0",
         "usage_instruction": [
             "請將此資料包上傳或貼給台股GPT V2。",
+            "此資料包只用於補強/擴充台股GPT V2，不得覆蓋或污染台股GPT 原始 Instruction 與既有功能。",
             "台股GPT V2 應只根據 WallWin-Gem 已計算結果、使用者提供資料與明確來源開投審會。",
             "不得自行編造新數字；缺資料必須標示待驗證。",
             "本資料包不構成投資建議，不保證獲利或勝率。",
         ],
+        "integration_policy": {
+            "relationship": "WallWin-Gem 是台股GPT V2 的結構化量化證據來源，不是台股GPT V2 的主控指令替代品。",
+            "allowed_use": [
+                "投審會式解讀",
+                "反方質疑",
+                "HITL 補資料清單",
+                "決策矩陣整理",
+                "資料完整度與待驗證標示",
+            ],
+            "forbidden_use": [
+                "覆蓋台股GPT V2 原始 Instruction",
+                "把 WallWin 分數重新計算成另一套未驗證分數",
+                "把缺漏資料自行補成確定數字",
+                "把資料包內容包裝成保證獲利或投資建議",
+            ],
+        },
         "wallwin_result": {
             "symbol": symbol,
             "style": engine["style"],
@@ -2321,6 +2338,7 @@ def build_taigpt_package_markdown(package):
         "",
         "## 使用規則",
         "- 台股GPT V2 只能解讀 WallWin-Gem 已計算結果、使用者提供資料與明確來源。",
+        "- 本資料包只補強/擴充台股GPT V2，不覆蓋台股GPT 原始 Instruction。",
         "- 不得自行編造新數字；缺資料必須標示〔待驗證〕。",
         "- AI 只做投審演繹，不取代 WallWin-Gem 的數學計算。",
         "",
