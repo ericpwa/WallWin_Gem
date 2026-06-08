@@ -2406,6 +2406,7 @@ def render_wallwin_glossary():
         glossary_df.rename(columns={"category": "分類", "term": "名詞", "formula": "公式/判讀", "explain": "解釋", "example": "案例"}).to_csv(index=False).encode("utf-8-sig"),
         "wallwin_glossary.csv",
         "text/csv",
+        on_click="ignore",
     )
 
     for category in sorted(filtered["category"].unique().tolist()):
@@ -2460,12 +2461,14 @@ st.sidebar.download_button(
     build_hitl_template(style, mode, detail="essential").to_csv(index=False).encode("utf-8-sig"),
     file_name=f"wallwin_hitl_template_{style}_{mode}.csv",
     mime="text/csv",
+    on_click="ignore",
 )
 st.sidebar.download_button(
     "下載 HITL 完整模板",
     build_hitl_template(style, mode, detail="full").to_csv(index=False).encode("utf-8-sig"),
     file_name=f"wallwin_hitl_full_template_{style}_{mode}.csv",
     mime="text/csv",
+    on_click="ignore",
 )
 uploaded_file = st.sidebar.file_uploader("上傳 CSV，第一欄建議為「股號」", type="csv")
 advanced_data = None
@@ -2543,7 +2546,7 @@ if scan_button:
         "此資訊僅供排序後解讀，不介入分數計算。"
     )
     st.dataframe(result_df, width="stretch", hide_index=True)
-    st.download_button("下載 Watchlist CSV", result_df.to_csv(index=False).encode("utf-8-sig"), "wallwin_watchlist.csv", "text/csv")
+    st.download_button("下載 Watchlist CSV", result_df.to_csv(index=False).encode("utf-8-sig"), "wallwin_watchlist.csv", "text/csv", on_click="ignore")
 
 if analyze_button:
     hist_long = load_history(symbol, period="5y")
@@ -2676,7 +2679,7 @@ if analyze_button:
             stat_cols[3].metric("獲利因子", f"{stats['獲利因子']:.2f}")
             st.caption("採下一交易日開盤進場，逐日檢查停損、停利、移動停損；同日停損/停利同時觸發時採保守停損。")
             st.dataframe(trades_df.tail(40), width="stretch", hide_index=True)
-            st.download_button("下載回測 CSV", trades_df.to_csv(index=False).encode("utf-8-sig"), f"{symbol}_backtest.csv", "text/csv")
+            st.download_button("下載回測 CSV", trades_df.to_csv(index=False).encode("utf-8-sig"), f"{symbol}_backtest.csv", "text/csv", on_click="ignore")
     with tab_calibration:
         st.subheader("權重校準與輪廓比較")
         render_walk_forward_guide()
@@ -2718,6 +2721,7 @@ if analyze_button:
                             wf_df.to_csv(index=False).encode("utf-8-sig"),
                             f"{symbol}_walk_forward_segments.csv",
                             "text/csv",
+                            on_click="ignore",
                         )
                         if not wf_trades.empty:
                             st.dataframe(wf_trades.tail(50), width="stretch", hide_index=True)
@@ -2726,6 +2730,7 @@ if analyze_button:
                                 wf_trades.to_csv(index=False).encode("utf-8-sig"),
                                 f"{symbol}_walk_forward_trades.csv",
                                 "text/csv",
+                                on_click="ignore",
                             )
     with tab_plan:
         render_trade_plan(engine, trade_plan, light, advice)
@@ -2756,10 +2761,10 @@ if analyze_button:
             hide_index=True,
         )
         st.warning("Gemini 生成報告已取消；本頁不再消耗 Gemini API Key，也不由 AI 重新計算分數。")
-        st.download_button("下載台股GPT JSON 資料包", taigpt_package_json.encode("utf-8-sig"), f"{symbol}_taigpt_decision_package.json", "application/json")
-        st.download_button("下載台股GPT Markdown 資料包", taigpt_package_md.encode("utf-8-sig"), f"{symbol}_taigpt_decision_package.md", "text/markdown")
-        st.download_button("下載台股GPT PDF 資料包", markdown_to_pdf_bytes(taigpt_package_md), f"{symbol}_taigpt_decision_package.pdf", "application/pdf")
-        st.download_button("下載非 AI Markdown 摘要", rule_report_md.encode("utf-8-sig"), f"{symbol}_wallwin_rule_report.md", "text/markdown")
-        st.download_button("下載非 AI PDF 摘要", markdown_to_pdf_bytes(rule_report_md), f"{symbol}_wallwin_rule_report.pdf", "application/pdf")
+        st.download_button("下載台股GPT JSON 資料包", taigpt_package_json.encode("utf-8-sig"), f"{symbol}_taigpt_decision_package.json", "application/json", on_click="ignore")
+        st.download_button("下載台股GPT Markdown 資料包", taigpt_package_md.encode("utf-8-sig"), f"{symbol}_taigpt_decision_package.md", "text/markdown", on_click="ignore")
+        st.download_button("下載台股GPT PDF 資料包", markdown_to_pdf_bytes(taigpt_package_md), f"{symbol}_taigpt_decision_package.pdf", "application/pdf", on_click="ignore")
+        st.download_button("下載非 AI Markdown 摘要", rule_report_md.encode("utf-8-sig"), f"{symbol}_wallwin_rule_report.md", "text/markdown", on_click="ignore")
+        st.download_button("下載非 AI PDF 摘要", markdown_to_pdf_bytes(rule_report_md), f"{symbol}_wallwin_rule_report.pdf", "application/pdf", on_click="ignore")
     with tab_glossary:
         render_wallwin_glossary()
