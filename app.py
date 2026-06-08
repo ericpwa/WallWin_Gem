@@ -620,7 +620,55 @@ def resolve_ai_api_key():
 
 def parse_watchlist(raw_text):
     tokens = raw_text.replace("\n", ",").replace("，", ",").split(",")
-    return [token.strip().upper() for token in tokens if token.strip()]
+    return [normalize_symbol(token.strip().upper()) for token in tokens if token.strip()]
+
+
+INDUSTRY_WATCHLIST_DEFAULTS = {
+    "半導體": {
+        "seeds": {"2330", "2330.TW", "2454", "2454.TW", "2303", "2303.TW", "3711", "3711.TW", "2379", "2379.TW", "3034", "3034.TW"},
+        "symbols": ["2330.TW", "2454.TW", "2303.TW", "3711.TW", "2379.TW"],
+        "caption": "半導體 Top 5 預設清單：晶圓代工、IC 設計、記憶體、封測/控股與高速傳輸代表股。",
+    },
+    "汽車與零組件": {
+        "seeds": {"2206", "2206.TW", "2227", "2227.TW", "2231", "2231.TW", "1536", "1536.TW", "1524", "1524.TW"},
+        "symbols": ["2206.TW", "2227.TW", "2231.TW", "1536.TW", "1524.TW"],
+        "caption": "汽車與零組件預設清單：整車、車用零組件與電動車供應鏈代表股。",
+    },
+}
+
+
+PORTFOLIO_PRESETS = {
+    "均衡成長型": {
+        "risk": 6,
+        "allocation": "核心白馬 40% / 黑馬成長 30% / 高股息現金流 20% / 現金 10%",
+        "note": "適合希望兼顧長期價值與波段機會的使用者。",
+    },
+    "穩健收益型": {
+        "risk": 4,
+        "allocation": "核心白馬 50% / 高股息現金流 30% / 防守型資產或現金 20%",
+        "note": "適合重視回撤控制、配息穩定與長期持有的人。",
+    },
+    "積極波段型": {
+        "risk": 8,
+        "allocation": "黑馬動能 45% / 核心白馬 25% / 題材衛星 20% / 現金 10%",
+        "note": "適合能承受較高波動，並願意嚴格執行停損的人。",
+    },
+    "短打當沖型": {
+        "risk": 9,
+        "allocation": "盤中動能 60% / 觀察名單 20% / 現金 20%；不隔夜、不攤平",
+        "note": "適合只做短線執行、重視流動性與滑價控制的人。",
+    },
+}
+
+
+def infer_watchlist_defaults(target_symbol):
+    normalized = normalize_symbol(target_symbol)
+    compact = normalized.replace(".TW", "").replace(".TWO", "")
+    for industry, config in INDUSTRY_WATCHLIST_DEFAULTS.items():
+        if normalized in config["seeds"] or compact in config["seeds"]:
+            return industry, config["symbols"], config["caption"]
+    fallback = ["2330.TW", "2317.TW", "2454.TW", normalized]
+    return "一般觀察清單", list(dict.fromkeys(fallback)), "未對應到特定產業，提供大型權值與目標股號混合清單作為起點。"
 
 
 def clean_hitl_dataframe(df):
@@ -2367,7 +2415,24 @@ analyze_button = st.sidebar.button("🚀 啟動多因子投審", type="primary",
 
 st.sidebar.markdown("---")
 st.sidebar.subheader("📡 Watchlist 多檔掃描")
-watchlist_symbols = st.sidebar.text_area("股票清單", "2330.TW, 2317.TW, 2454.TW, 2206.TW", height=80)
+default_industry, default_watchlist, default_watchlist_caption = infer_watchlist_defaults(symbol)
+with st.sidebar.expander("股票清單：同產業綜合比較", expanded=True):
+    st.caption(f"預設類別：{default_industry}")
+    st.caption(default_watchlist_caption)
+    watchlist_symbols = st.text_area(
+        "股票清單",
+        ", ".join(default_watchlist),
+        height=92,
+        help="非必要項目。只在按下掃描 Watchlist 時使用，不會介入目標股號的單檔分析分數。",
+    )
+    st.caption("可手動改成任何想比較的股號；建議 3-10 檔，最多 20 檔。")
+with st.sidebar.expander("投資組合：配比與風險情境", expanded=False):
+    portfolio_name = st.selectbox("投資組合類型", list(PORTFOLIO_PRESETS.keys()))
+    portfolio_preset = PORTFOLIO_PRESETS[portfolio_name]
+    portfolio_risk = st.slider("風險承受度（1=保守，10=積極）", 1, 10, portfolio_preset["risk"], 1)
+    portfolio_allocation = st.text_area("配比", portfolio_preset["allocation"], height=88)
+    st.caption(portfolio_preset["note"])
+    st.caption("非必要項目。只做掃描情境與解讀參考，不會改變核心分數、燈號、回測或風控計算。")
 scan_button = st.sidebar.button("📡 掃描 Watchlist", width="stretch")
 
 if scan_button:
@@ -2395,6 +2460,11 @@ if scan_button:
     if "勝率分數" in result_df.columns:
         result_df = result_df.sort_values("勝率分數", ascending=False)
     st.subheader("📡 Watchlist 多因子掃描")
+    st.caption(
+        f"股票清單情境：{default_industry}；投資組合參考：{portfolio_name}，"
+        f"風險承受度 {portfolio_risk}/10，配比：{portfolio_allocation}。"
+        "此資訊僅供排序後解讀，不介入分數計算。"
+    )
     st.dataframe(result_df, width="stretch", hide_index=True)
     st.download_button("下載 Watchlist CSV", result_df.to_csv(index=False).encode("utf-8-sig"), "wallwin_watchlist.csv", "text/csv")
 
