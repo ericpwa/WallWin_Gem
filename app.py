@@ -1313,18 +1313,38 @@ def run_walk_forward_calibration(hist, base_params, train_days=252, test_days=63
 
 
 def hitl_recommendations(style, mode):
-    base = ["股號", "產業", "同業排名", "財報備註"]
+    tiers = hitl_field_tiers(style, mode)
+    return tiers["required"] + tiers["useful"] + tiers["optional"]
+
+
+def hitl_field_tiers(style, mode):
+    required = ["股號"]
+    useful = ["產業", "同業排名", "財報備註"]
+    optional = []
     if mode == "白馬模式":
-        base += ["月份", "營收", "EPS", "淨利", "ROE", "ROA", "ROIC", "毛利率", "營益率", "淨利率", "負債權益比", "流動比率", "利息保障倍數", "自由現金流", "FCF殖利率", "PE分位", "PB分位", "配息率"]
+        required += ["ROE", "自由現金流", "負債權益比"]
+        useful += ["月份", "營收", "EPS", "淨利", "營收YoY", "EPSYoY", "毛利率", "營益率", "淨利率", "ROIC", "流動比率", "配息率"]
+        optional += ["ROA", "利息保障倍數", "FCF殖利率", "PE分位", "PB分位"]
     else:
-        base += ["營收YoY", "EPSYoY", "分析師上修", "法人買超", "主力籌碼", "產業強度", "突破型態備註", "事件催化"]
+        required += ["營收YoY", "EPSYoY", "事件催化"]
+        useful += ["分析師上修", "法人買超", "主力籌碼", "產業強度", "突破型態備註"]
+        optional += ["同業排名", "財報備註"]
     if style == "當沖":
-        base += ["盤中催化", "新聞時間", "券資變化", "隔日沖風險"]
-    return base
+        required += ["盤中催化"]
+        useful += ["新聞時間", "隔日沖風險"]
+        optional += ["券資變化"]
+    deduped = {}
+    for tier_name, values in {"required": required, "useful": useful, "optional": optional}.items():
+        deduped[tier_name] = []
+        for value in values:
+            if value not in deduped[tier_name] and not any(value in deduped[prev] for prev in ["required", "useful", "optional"] if prev != tier_name):
+                deduped[tier_name].append(value)
+    return deduped
 
 
-def build_hitl_template(style, mode):
-    columns = hitl_recommendations(style, mode)
+def build_hitl_template(style, mode, detail="essential"):
+    tiers = hitl_field_tiers(style, mode)
+    columns = tiers["required"] + tiers["useful"] if detail == "essential" else hitl_recommendations(style, mode)
     sample = {column: "" for column in columns}
     sample["股號"] = "2330.TW"
     if "月份" in sample:
@@ -1339,9 +1359,9 @@ def build_hitl_template(style, mode):
 def hitl_coverage(advanced_df, style, mode):
     if advanced_df is None or advanced_df.empty:
         return 0, []
-    recommended = hitl_recommendations(style, mode)
-    present = [column for column in recommended if column in advanced_df.columns]
-    return round(len(present) / max(len(recommended), 1) * 100, 1), [column for column in recommended if column not in present]
+    required = hitl_field_tiers(style, mode)["required"]
+    present = [column for column in required if column in advanced_df.columns]
+    return round(len(present) / max(len(required), 1) * 100, 1), [column for column in required if column not in present]
 
 
 def profile_weights(base_weights, profile):
@@ -2280,7 +2300,10 @@ require_app_password()
 render_v3_core_status()
 
 st.sidebar.header("⚙️ 投審控制台")
-st.sidebar.success("V3 API-first Core 已啟用") if V3_CORE_AVAILABLE else st.sidebar.warning("V3 Core 未啟用，使用 V2 fallback")
+if V3_CORE_AVAILABLE:
+    st.sidebar.success("V3 API-first Core 已啟用")
+else:
+    st.sidebar.warning("V3 Core 未啟用，使用 V2 fallback")
 ai_api_key, ai_key_source = resolve_ai_api_key()
 symbol = normalize_symbol(st.sidebar.text_input("🎯 目標股號", "2206.TW"))
 style = st.sidebar.radio("交易週期", ["波段", "投資", "當沖"], horizontal=True)
@@ -2296,12 +2319,26 @@ with st.sidebar.expander("依選擇自動套用，可人工微調", expanded=Tru
     vcp_threshold = st.slider("VCP 壓縮限度 (%)", 3.0, 25.0, float(preset["vcp"]), 0.5)
 
 st.sidebar.subheader("📁 HITL 私房數據")
-recommended_cols = hitl_recommendations(style, mode)
-st.sidebar.info("建議上傳欄位：" + "、".join(recommended_cols[:12]) + ("..." if len(recommended_cols) > 12 else ""))
+hitl_tiers = hitl_field_tiers(style, mode)
+st.sidebar.info("必要欄位：" + "、".join(hitl_tiers["required"]))
+with st.sidebar.expander("哪些 HITL 資料最重要？", expanded=False):
+    st.markdown("**必要欄位**：影響品質、成長、風控或催化判斷，建議優先提供。")
+    st.caption("、".join(hitl_tiers["required"]))
+    st.markdown("**強化欄位**：可提升分析精準度，沒有也能運作。")
+    st.caption("、".join(hitl_tiers["useful"]) if hitl_tiers["useful"] else "無")
+    st.markdown("**可省略欄位**：只做輔助解讀，不影響核心流程啟動。")
+    st.caption("、".join(hitl_tiers["optional"]) if hitl_tiers["optional"] else "無")
+    st.warning("不建議讓 AI 自行上網抓財報數字後直接寫入分數；未經來源驗證的資料只能當備註，不可作為核心計算依據。")
 st.sidebar.download_button(
-    "下載 HITL CSV 模板",
-    build_hitl_template(style, mode).to_csv(index=False).encode("utf-8-sig"),
+    "下載 HITL 精簡模板",
+    build_hitl_template(style, mode, detail="essential").to_csv(index=False).encode("utf-8-sig"),
     file_name=f"wallwin_hitl_template_{style}_{mode}.csv",
+    mime="text/csv",
+)
+st.sidebar.download_button(
+    "下載 HITL 完整模板",
+    build_hitl_template(style, mode, detail="full").to_csv(index=False).encode("utf-8-sig"),
+    file_name=f"wallwin_hitl_full_template_{style}_{mode}.csv",
     mime="text/csv",
 )
 uploaded_file = st.sidebar.file_uploader("上傳 CSV，第一欄建議為「股號」", type="csv")
@@ -2314,9 +2351,9 @@ if uploaded_file:
         st.sidebar.success(f"HITL CSV 讀取成功：{hitl_read_format}，{len(advanced_data)} 筆 / {len(advanced_data.columns)} 欄")
 coverage_pct, missing_hitl_cols = hitl_coverage(advanced_data, style, mode)
 if uploaded_file and advanced_data is not None:
-    st.sidebar.success(f"HITL 欄位覆蓋率：{coverage_pct:.1f}%")
+    st.sidebar.success(f"HITL 必要欄位覆蓋率：{coverage_pct:.1f}%")
     if missing_hitl_cols:
-        st.sidebar.caption("仍缺：" + "、".join(missing_hitl_cols[:8]) + ("..." if len(missing_hitl_cols) > 8 else ""))
+        st.sidebar.caption("仍缺必要欄位：" + "、".join(missing_hitl_cols[:8]) + ("..." if len(missing_hitl_cols) > 8 else ""))
 
 st.sidebar.subheader("🛠️ HITL 人工校準")
 with st.sidebar.expander("基本面/催化/風險覆寫", expanded=False):
