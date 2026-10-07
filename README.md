@@ -1,29 +1,34 @@
 # 🛡️ WallWin_Gem (華爾街致勝寶石)
 
-**機構級量化決策輔助引擎 (Quantitative Decision Engine powered by Gemini AI)**
+**機構級量化決策輔助引擎 (Deterministic Quantitative Decision Engine)**
 
-WallWin_Gem 是一套專為高階經理人與操盤手打造的 SaaS 級別量化分析系統。結合了即時金融數據擷取、技術指標演算法，以及 Google Gemini 最新世代大型語言模型，提供「數據過濾 ➔ 演算法判定 ➔ AI 深度解析」的端到端（End-to-End）決策支援。
+WallWin_Gem 是一套專為高階經理人與操盤手打造的量化分析系統。結合金融數據擷取、技術指標演算法與 `wallwin_core` 的 deterministic quant engine，提供「數據輸入 ➔ 規則計算 ➔ 結構化結果／規則式摘要」的決策支援。選配的 AI 文字解讀由使用者將匯出的資料包交給外部台股GPT V2 完成，不參與計算核心。
 
 ## 🚀 核心戰略架構 (Core Features)
 
 * **雙軌演算法矩陣 (Dual-Track Algorithm):**
     * **白馬股模式 (Value/Growth):** 專注於基本面護城河，運用 P/E (本益比)、PEG (本益成長比)、P/B (股價淨值比) 評估安全邊際與合理估值。
     * **黑馬股模式 (Momentum/Breakout):** 專注於量價籌碼動能，運用 RVOL (相對成交量)、VCP (波動收縮型態)、RSI 捕捉轉機與突破訊號。
-* **動態模型雷達 (Dynamic AI Radar):** 內建防禦性 AI 路由機制。自動向 Google 伺服器索取當下可用模型清單，嚴格剔除純語音 (TTS)、舊視覺 (Vision) 與機器人 (Robotics) 測試模型，並強制優先呼叫最新世代的 `Gemini Flash` 模型，具備抗 429 (配額耗盡) 與抗 400 (模態衝突) 的自我降階容錯能力。
-* **HITL 人機協同覆蓋 (Human-in-the-loop):** 具備參數微調滑桿與數據覆蓋開關。當外部 API (如 Yahoo Finance) 財報數據缺失或失真時，允許操盤手手動注入真實 PEG 數據，強制 AI 基於校準後的真實數據進行推演。
-* **機構級 DD 報告 (Due Diligence Report):** AI 輸出嚴格受控於「繁體中文鐵律」與「四段式格式強制約束 (結論-依據-步驟-風險)」，徹底消滅幻覺與廢話。
+* **確定性量化核心 (Deterministic Quant Engine):** 分數、燈號、回測與風控由明確規則計算。`app.py` 的分析與回測優先呼叫 `wallwin_core`，失敗時回退 V2 規則函式；`api_app.py` 提供同一套 core 的 FastAPI HTTP layer。計算核心不得呼叫 LLM，也不隱性抓取網路資料。
+* **HITL 人機協同覆蓋 (Human-in-the-loop):** 具備參數微調滑桿與數據覆蓋開關。當外部 API (如 Yahoo Finance) 財報數據缺失或失真時，允許操盤手手動注入校準資料，由規則引擎依輸入資料計算。
+* **規則式報告與選配 AI 解讀:** 系統產生非 AI 摘要及台股GPT JSON／Markdown／PDF 資料包。「AI 投審會決議」頁面提供下載與外部 GPT 連結，使用者須自行上傳或貼上資料包；目前沒有自動 LLM 呼叫。外部台股GPT V2 僅做文字解讀、反方質疑與缺資料整理，不得重算 WallWin 分數或自行補齊缺漏數字。交接規則見 [`TAIGPT_WALLWIN_HANDOFF.md`](TAIGPT_WALLWIN_HANDOFF.md)。
 
 ## 🛠️ 技術棧 (Tech Stack)
 
 * **前端介面 & 部署:** Streamlit / Streamlit Community Cloud
 * **數據與指標處理:** `yfinance`, `pandas`, `ta` (Technical Analysis Library)
-* **AI 決策大腦:** `google-generativeai` (Gemini 2.5/2.0 API)
+* **量化計算核心:** 本 repository 的 `wallwin_core` Python package，不依賴 LLM
+* **圖表與報告:** `plotly`, `reportlab`
+* **HTTP API:** `fastapi`, `uvicorn`；現行 `requirements.txt` 另列 `httpx2`
+
+依賴以 [`requirements.txt`](requirements.txt) 為準；目前沒有 `google-generativeai` 或 `google-genai`。執行量化分析與規則式報告不需要 Gemini API Key；外部台股GPT 解讀不屬於本程式的 Python 依賴。
 
 ## 🔐 部署與資安紀律 (Deployment & Security)
 
-本專案採 CI/CD 雲端部署架構，嚴格遵守密碼學隔離原則：
-1. 核心程式碼 (`app.py`) 與依賴清單 (`requirements.txt`) 託管於 GitHub Private Repository。
-2. API Key 絕對禁止硬編碼 (Hardcoding)。本地端依賴 `.streamlit/secrets.toml` 與 `.gitignore` 建立防護罩；雲端則透過 Streamlit Advanced Settings 的 Secrets 模組進行環境變數注入。
+本 repository 目前為 GitHub Public Repository；公開原始碼與部署環境的秘密設定須分開管理：
+
+1. `app.py`、`api_app.py`、`wallwin_core/` 與 `requirements.txt` 均在本公開 repository。
+2. 密碼、API Key 與敏感資料禁止硬編碼或提交。`app.py` 目前從 Streamlit Secrets 讀取 `APP_PASSWORD`；本地可使用被 `.gitignore` 排除的 `.streamlit/secrets.toml`，雲端使用 Streamlit 的 Secrets 設定。量化核心不直接讀取 secrets。詳見 [`SECURITY.md`](SECURITY.md)。
 
 ---
 *Developed & Architected for BOSS (Eric PAN)*

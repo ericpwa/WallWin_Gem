@@ -2,6 +2,8 @@
 
 日期：2026-06-05
 
+文件同步：2026-10-07，依 main 的現行程式與 `requirements.txt` 核對。Gemini 生成報告已取消；目前 AI 文字解讀採使用者匯出資料包後交給外部台股GPT V2 的選配流程。
+
 最新狀態：
 
 | 階段 | 狀態 | 說明 |
@@ -12,7 +14,7 @@
 
 ## 1. CTO 級結論
 
-WallWin Gem V2 已經具備量化引擎與 Streamlit 操作控制台，但目前主要技術債是 `app.py` 同時承擔 UI、資料抓取、量化計算、AI 報告、CSV/HITL、回測與視覺化。這種架構可以快速做產品驗證，但不適合直接接 Custom GPT Actions，因為外部系統需要穩定、可測試、可重現的 API contract。
+WallWin Gem V2 已經具備量化引擎與 Streamlit 操作控制台，但目前主要技術債是 `app.py` 同時承擔 UI、資料抓取、量化計算、規則式報告／台股GPT 資料包匯出、CSV/HITL、回測與視覺化。這種架構可以快速做產品驗證，但不適合直接接 Custom GPT Actions，因為外部系統需要穩定、可測試、可重現的 API contract。
 
 V3 不應重做 UI，也不應一次把 Streamlit 改成後端服務。最小可行路線是：
 
@@ -30,10 +32,10 @@ V3 不應重做 UI，也不應一次把 Streamlit 改成後端服務。最小可
 
 | 路徑 | 功能 | V3 判斷 |
 |---|---|---|
-| `app.py` | Streamlit UI、資料抓取、量化計算、回測、AI 報告、HITL、CSS | V2 主程式保留；Phase 2A 已優先接 V3 core |
+| `app.py` | Streamlit UI、資料抓取、量化計算、回測、規則式報告／台股GPT 資料包匯出、HITL、CSS | V2 主程式保留；Phase 2A 已優先接 V3 core |
 | `api_app.py` | FastAPI HTTP layer | Phase 3A 新增 |
-| `requirements.txt` | Streamlit、yfinance、pandas、ta、google-genai、reportlab、plotly、FastAPI、Uvicorn | Phase 3A 新增 API 依賴 |
-| `.streamlit/` | Streamlit secrets/config | 保留 |
+| `requirements.txt` | `streamlit`、`yfinance`、`pandas`、`ta`、`reportlab`、`plotly`、`fastapi`、`uvicorn`、`httpx2` | 現行完整依賴清單；無 Gemini SDK |
+| `.streamlit/`（部署設定，不提交） | 本地 Streamlit secrets/config，由 `.gitignore` 排除 | 不屬於公開程式碼 |
 | `SECURITY.md` | GitHub 安全政策 | 保留 |
 | `WALLWIN_OPTIMIZATION_PROPOSAL.md` | 先前優化方案 | 保留 |
 | `wallwin_core/` | V3 API-first 核心 | 新增 |
@@ -45,8 +47,8 @@ V3 不應重做 UI，也不應一次把 Streamlit 改成後端服務。最小可
 |---|---|---|---|
 | Yahoo Finance / yfinance | OHLCV、基本資料 | rate limit、缺值、欄位不穩 | Data Layer 回傳狀態，不讓例外炸出 |
 | CSV / HITL | 使用者私房基本面、財報、校準資料 | 編碼、欄位不一致 | 以來源標記 `input.hitl` 管控 |
-| Streamlit Secrets | BYOK、APP_PASSWORD | 資安風險 | V3 core 不直接讀 secrets |
-| Gemini BYOK | AI 報告 | 429/503/quota/model unavailable | 不參與量化計算 |
+| Streamlit Secrets | `APP_PASSWORD` | 資安風險 | V3 core 不直接讀 secrets；不需要 Gemini BYOK |
+| 外部台股GPT V2（選配文字層） | 使用者上傳或貼上匯出的資料包後進行 AI 解讀 | 文字解讀仍須查核；缺資料不得補成確定數字 | 本程式無自動 LLM 呼叫；外部 GPT 不得重算分數 |
 | Google Finance | 無 | 使用者已決議終止 | V3 明確不加入 |
 
 ### 現有計算邏輯
@@ -63,7 +65,7 @@ V2 已有以下核心能力：
 | 策略回測 | `run_signal_backtest()` |
 | walk-forward 校準 | `run_walk_forward_calibration()` |
 | HITL 模板/覆蓋率 | `build_hitl_template()`、`hitl_coverage()` |
-| AI 報告匯出 | `build_report_markdown()`、`markdown_to_pdf_bytes()` |
+| 規則式報告／台股GPT 資料包匯出 | `build_rule_based_report()`、`build_report_markdown()`、`build_taigpt_decision_package()`、`build_taigpt_package_markdown()`、`markdown_to_pdf_bytes()` |
 
 ### 技術債
 
@@ -72,7 +74,7 @@ V2 已有以下核心能力：
 | UI/資料/計算耦合在 `app.py` | 難測試、難接 API | 抽 `wallwin_core` |
 | yfinance 例外可能中斷流程 | 外部 API 不穩 | Data Layer 狀態化 |
 | API contract 不存在 | GPT Actions 無法穩定呼叫 | 定義 endpoint schema |
-| AI 報告錯誤與量化計算混在同一產品流 | 容易誤解為 AI 算分 | AI 僅做文字輸出，分數由規則引擎 |
+| 「AI 投審會決議」UI 標籤可能混淆計算與解讀 | 容易誤解為內建 AI 算分或生成報告 | 本程式只算分並匯出規則式摘要／資料包；AI 文字解讀在外部台股GPT V2 |
 | 欄位名稱與中文 UI 綁定 | 外部整合困難 | V3 output 使用穩定英文 key，中文可由 UI 轉譯 |
 
 ## 3. V3 分層架構
@@ -87,7 +89,8 @@ flowchart TD
     Data --> Yahoo["Yahoo Finance / yfinance"]
     Data --> CSV["CSV / HITL 上傳"]
     Core --> Calc["Deterministic Indicators, Scores, Backtests, Risk"]
-    AI["Gemini BYOK"] --> Report["AI Report Text Only"]
+    UI --> Package["Rule Report / 台股GPT 資料包"]
+    Package -. "使用者上傳或貼上（選配）" .-> GPT["外部台股GPT V2 - 文字解讀"]
     Core -. no AI calculation .-> API
 ```
 
@@ -106,6 +109,12 @@ flowchart TD
 ### Data Layer
 
 負責資料來源與錯誤狀態。yfinance rate limit、空資料、使用者上傳資料不足，都要回傳可解讀狀態。
+
+### 規則式報告與選配 AI 文字層
+
+`app.py` 的 `build_rule_based_report()` 與 API 的 `export_report()` 均以已計算結果產生規則式 Markdown，不呼叫 LLM。「AI 投審會決議」頁面提供台股GPT JSON／Markdown／PDF 資料包下載及外部 GPT 連結；使用者自行上傳或貼上資料包後，外部台股GPT V2 才進行文字解讀、反方質疑與 HITL 補資料整理。這是選配的人工交接流程，並非已完成的自動 GPT Actions 串接；外部 GPT 不得重算分數或自行補齊缺漏財務／行情數字。詳見 [`TAIGPT_WALLWIN_HANDOFF.md`](TAIGPT_WALLWIN_HANDOFF.md)。
+
+目前本 repository 為 GitHub Public Repository，程式與 `requirements.txt` 公開；密碼與敏感資料依 [`SECURITY.md`](SECURITY.md) 管理，不得提交。現行依賴無 `google-generativeai` 或 `google-genai`，量化計算與規則式報告不需要 Gemini API Key。
 
 ## 4. API Schema 草案
 
@@ -350,7 +359,7 @@ Output：
 }
 ```
 
-Phase 1 報告為規則式 Markdown，不呼叫 Gemini，避免 quota/503 影響 API 穩定性。
+現行 API 報告為規則式 Markdown，不呼叫 LLM；Gemini SDK、模型路由與 API Key 不屬於此 endpoint 的依賴。
 
 ## 6. 分階段 Implementation Plan
 
@@ -474,5 +483,5 @@ python -m uvicorn api_app:app --host 127.0.0.1 --port 8000
 | 可測試 | unittest 通過 |
 | 可重現 | 同一筆 OHLCV/input 得到同一組分數 |
 | 錯誤可控 | 資料不足、欄位錯誤、來源限流以 status 回傳 |
-| 無 AI 幻覺計算 | 分數/燈號/回測/風控不呼叫 Gemini |
+| 無 LLM 計算 | 分數/燈號/回測/風控由 deterministic 規則引擎計算，不呼叫任何 LLM；規則式報告亦不呼叫 LLM |
 | 無 Google Finance | Data Layer 僅支援 yfinance 與顯式 input |
